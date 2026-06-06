@@ -18,7 +18,7 @@ cargo install ghidra-mon
 Or build from source:
 
 ```bash
-git clone https://github.com/waya/ghidra-mon.git
+git clone https://github.com/Wang-Yang-source/ghidra-mon.git
 cd ghidra-mon
 cargo build --release
 ```

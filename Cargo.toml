@@ -4,7 +4,7 @@ version = "0.1.1"
 edition = "2024"
 description = "Ghidra Monitor & AI MCP Unified Binary for seamless reverse engineering workflows."
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/waya/ghidra-mon"
+repository = "https://github.com/Wang-Yang-source/ghidra-mon"
 keywords = ["ghidra", "reverse-engineering", "mcp", "tui", "ai"]
 categories = ["command-line-utilities", "development-tools"]
 
