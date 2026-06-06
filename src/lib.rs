@@ -1,7 +1,7 @@
-// ghidra-mon: Ghidra Monitor & AI MCP Unified Binary
+// revisor: Ghidra Monitor & AI MCP Unified Binary
 //
 // This is the library entry point, allowing other Rust projects to use
-// ghidra-mon as a dependency for programmatic Ghidra access.
+// revisor as a dependency for programmatic Ghidra access.
 //
 // Example usage:
 // ```rust

@@ -1,4 +1,4 @@
-// TUI dashboard for ghidra-mon.
+// TUI dashboard for revisor.
 // Cyberpunk-themed ratatui interface acting as a Terminal IDE Artifact.
 
 use crate::bridge::{read_bridge_port, BridgeClient};
@@ -18,6 +18,8 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs, Wrap},
     Terminal,
 };
+use goblin::Object;
+use std::fs;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use syntect::easy::HighlightLines;
@@ -26,7 +28,7 @@ use syntect::parsing::SyntaxSet;
 use std::{io, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 
-pub const SOCKET_PATH: &str = "/tmp/ghidra-mon.sock";
+pub const SOCKET_PATH: &str = "/tmp/revisor.sock";
 
 #[derive(PartialEq, Clone, Copy)]
 enum AppTab {
@@ -77,6 +79,13 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
     let mut input = String::new();
     let mut active_pane = ActivePane::Input;
     let mut app_tab = AppTab::Decompiler;
+
+    // Command History & Suggestions
+    let mut command_history: Vec<String> = Vec::new();
+    let mut history_index: Option<usize> = None;
+    let mut history_search_prefix: String = String::new();
+    let mut suggestions: Vec<String> = Vec::new();
+    let mut suggestion_index: usize = 0;
 
     // Data State
     let mut functions: Vec<FunctionInfo> = Vec::new();
@@ -153,6 +162,32 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                 });
             }
         }
+
+        // Compute Suggestions
+        suggestions.clear();
+        if active_pane == ActivePane::Input && !input.is_empty() {
+            let cmds = ["analyze", "bridge", "query", "clear", "quit", "help", "setup", "mcp", "info"];
+            let queries = ["decompile", "list_functions", "ping", "search_strings", "callers", "callees", "program_info", "memory_blocks", "symbols"];
+            
+            let parts: Vec<&str> = input.split_whitespace().collect();
+            if input.ends_with(' ') || parts.len() > 1 {
+                if let Some(&"query") = parts.first() {
+                    let second = if parts.len() > 1 && !input.ends_with(' ') { parts[1] } else { "" };
+                    suggestions = queries.iter().filter(|q| q.starts_with(second)).map(|s| s.to_string()).collect();
+                } else if input.ends_with("-") || parts.last().unwrap_or(&"").starts_with("-") {
+                    let last = parts.last().unwrap_or(&"");
+                    let flags = ["--help", "-p", "-n", "--json", "--port", "--version"];
+                    suggestions = flags.iter().filter(|f| f.starts_with(last)).map(|s| s.to_string()).collect();
+                }
+            } else {
+                let first = parts.first().unwrap_or(&"");
+                suggestions = cmds.iter().filter(|c| c.starts_with(first)).map(|s| s.to_string()).collect();
+            }
+        }
+        if suggestion_index >= suggestions.len() {
+            suggestion_index = 0;
+        }
+
         // Poll receivers
         if let Ok(funcs) = rx_funcs.try_recv() {
             functions = funcs;
@@ -268,11 +303,47 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
             );
             f.render_widget(logs_block, main_chunks[2]);
 
-            // 4. Input Bar
+            // Compute Ghost Text (Fish style)
+            let mut ghost_text = String::new();
+            if active_pane == ActivePane::Input && !input.is_empty() {
+                if let Some(hist) = command_history.iter().rev().find(|h| h.starts_with(&input) && *h != &input) {
+                    ghost_text = hist[input.len()..].to_string();
+                } else {
+                    let parts: Vec<&str> = input.split_whitespace().collect();
+                    if !input.ends_with(' ') {
+                        if let Some(last) = parts.last() {
+                            if let Some(sugg) = suggestions.iter().find(|s| s.starts_with(*last)) {
+                                ghost_text = sugg[last.len()..].to_string();
+                            }
+                        }
+                    }
+                }
+            }
+
             let input_border = if active_pane == ActivePane::Input { Color::Green } else { Color::DarkGray };
-            let input_block = Paragraph::new(format!("> {}_", input))
-                .block(Block::default().title(" ⌨️ COMMAND CONSOLE ").borders(Borders::ALL).border_style(Style::default().fg(input_border)))
-                .style(Style::default().fg(Color::Yellow));
+            let title = if !suggestions.is_empty() && active_pane == ActivePane::Input {
+                let mut sugg_str = String::from(" ⌨️ COMMAND CONSOLE | Suggestions: ");
+                for (i, s) in suggestions.iter().enumerate() {
+                    if i == suggestion_index {
+                        sugg_str.push_str(&format!("[{}] ", s));
+                    } else {
+                        sugg_str.push_str(&format!("{} ", s));
+                    }
+                }
+                sugg_str
+            } else {
+                String::from(" ⌨️ COMMAND CONSOLE (Fish-style: Right arrow to autocomplete) ")
+            };
+
+            let line = Line::from(vec![
+                Span::styled("> ", Style::default().fg(Color::Yellow)),
+                Span::styled(input.clone(), Style::default().fg(Color::Yellow)),
+                Span::styled(ghost_text.clone(), Style::default().fg(Color::DarkGray)),
+                Span::styled("_", Style::default().fg(Color::Yellow)),
+            ]);
+
+            let input_block = Paragraph::new(line)
+                .block(Block::default().title(title).borders(Borders::ALL).border_style(Style::default().fg(input_border)));
             f.render_widget(input_block, main_chunks[3]);
         })?;
 
@@ -375,81 +446,190 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                         }
 
                         // Input Mode Handling
-                        KeyCode::Char(c) if active_pane == ActivePane::Input => { input.push(c); }
-                        KeyCode::Backspace if active_pane == ActivePane::Input => { input.pop(); }
+                        KeyCode::Char(c) if active_pane == ActivePane::Input => { 
+                            input.push(c); 
+                            history_index = None;
+                            history_search_prefix.clear();
+                        }
+                        KeyCode::Backspace if active_pane == ActivePane::Input => { 
+                            input.pop(); 
+                            history_index = None;
+                            history_search_prefix.clear();
+                        }
+                        KeyCode::Up if active_pane == ActivePane::Input => {
+                            if !command_history.is_empty() {
+                                if history_index.is_none() {
+                                    history_search_prefix = input.clone();
+                                }
+                                let mut start_idx = history_index.unwrap_or(command_history.len());
+                                let mut found = false;
+                                while start_idx > 0 {
+                                    start_idx -= 1;
+                                    if command_history[start_idx].starts_with(&history_search_prefix) {
+                                        history_index = Some(start_idx);
+                                        input = command_history[start_idx].clone();
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                                // If not found going up, we stay where we are.
+                            }
+                        }
+                        KeyCode::Down if active_pane == ActivePane::Input => {
+                            if let Some(mut curr_idx) = history_index {
+                                let mut found = false;
+                                while curr_idx + 1 < command_history.len() {
+                                    curr_idx += 1;
+                                    if command_history[curr_idx].starts_with(&history_search_prefix) {
+                                        history_index = Some(curr_idx);
+                                        input = command_history[curr_idx].clone();
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                                if !found {
+                                    history_index = None;
+                                    input = history_search_prefix.clone();
+                                }
+                            }
+                        }
+                        KeyCode::Right if active_pane == ActivePane::Input => {
+                            // Fish-style: Autocomplete ghost text
+                            let mut ghost_text = String::new();
+                            if !input.is_empty() {
+                                if let Some(hist) = command_history.iter().rev().find(|h| h.starts_with(&input) && *h != &input) {
+                                    ghost_text = hist[input.len()..].to_string();
+                                } else {
+                                    let parts: Vec<&str> = input.split_whitespace().collect();
+                                    if !input.ends_with(' ') {
+                                        if let Some(last) = parts.last() {
+                                            if let Some(sugg) = suggestions.iter().find(|s| s.starts_with(*last)) {
+                                                ghost_text = sugg[last.len()..].to_string();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if !ghost_text.is_empty() {
+                                input.push_str(&ghost_text);
+                                if !input.ends_with(' ') {
+                                    input.push(' ');
+                                }
+                            }
+                        }
                         KeyCode::Enter if active_pane == ActivePane::Input => {
                             let cmd = input.trim().to_string();
                             input.clear();
+                            history_index = None;
+                            history_search_prefix.clear();
                             if !cmd.is_empty() {
+                                command_history.push(cmd.clone());
                                 if cmd == "quit" || cmd == "exit" || cmd == "q" { break; }
 
                                 let state_clone = Arc::clone(&state);
-                                tokio::spawn(async move {
-                                    let mut args: Vec<String> = cmd.split_whitespace().map(|s| s.to_string()).collect();
-
-                                    if args[0] == "clear" || args[0] == "cls" {
+                                if cmd.starts_with("info ") {
+                                    let target = cmd.trim_start_matches("info ").trim().to_string();
+                                    tokio::spawn(async move {
                                         let mut st = state_clone.lock().await;
-                                        st.logs.clear();
-                                        return;
-                                    }
-
-                                    if args[0] == "help" {
-                                        let mut st = state_clone.lock().await;
-                                        st.logs.push("📝 Commands: analyze, bridge, query <cmd>, clear, quit".into());
-                                        return;
-                                    }
-
-                                    let query_cmds = [
-                                        "ping", "program_info", "list_functions", "memory_blocks", "symbols", "list_imports", "list_exports", "list_data_types", "decompile", "function_at", "function_containing", "callers", "callees", "call_graph", "control_flow_graph", "instructions_for_function", "references_to", "references_from", "search_strings", "find_symbols", "data_at", "rename_function", "set_comment", "set_plate_comment",
-                                    ];
-                                    if query_cmds.contains(&args[0].as_str()) {
-                                        args.insert(0, "query".to_string());
-                                    }
-
-                                    {
-                                        let mut st = state_clone.lock().await;
-                                        st.logs.push(format!("❯ ghidra-mon {}", args.join(" ")));
-                                    }
-
-                                    let exe = std::env::current_exe().unwrap_or_else(|_| "ghidra-mon".into());
-                                    let mut command = tokio::process::Command::new(exe);
-                                    command.args(&args);
-                                    command.stdout(Stdio::piped());
-                                    command.stderr(Stdio::piped());
-
-                                    match command.spawn() {
-                                        Ok(mut child) => {
-                                            let stdout = child.stdout.take();
-                                            let stderr = child.stderr.take();
-
-                                            if let Some(stdout) = stdout {
-                                                let state_clone_out = state_clone.clone();
-                                                tokio::spawn(async move {
-                                                    let mut reader = BufReader::new(stdout).lines();
-                                                    while let Ok(Some(line)) = reader.next_line().await {
-                                                        let mut st = state_clone_out.lock().await;
-                                                        st.logs.push(line);
+                                        st.logs.push(format!("⚡ Fast Static Analysis on: {}", target));
+                                        match fs::read(&target) {
+                                            Ok(buffer) => {
+                                                match Object::parse(&buffer) {
+                                                    Ok(Object::Elf(elf)) => {
+                                                        st.logs.push(format!("🛡️ Format: ELF"));
+                                                        st.logs.push(format!("📐 Architecture: {}", if elf.is_64 { "64-bit" } else { "32-bit" }));
+                                                        st.logs.push(format!("📥 Dynamic Symbols: {}", elf.dynsyms.len()));
+                                                        st.logs.push(format!("📚 Sections: {}", elf.section_headers.len()));
+                                                        st.logs.push(format!("🚀 Entry Point: 0x{:x}", elf.header.e_entry));
                                                     }
-                                                });
-                                            }
-
-                                            if let Some(stderr) = stderr {
-                                                let state_clone_err = state_clone.clone();
-                                                tokio::spawn(async move {
-                                                    let mut reader = BufReader::new(stderr).lines();
-                                                    while let Ok(Some(line)) = reader.next_line().await {
-                                                        let mut st = state_clone_err.lock().await;
-                                                        st.logs.push(line);
+                                                    Ok(Object::PE(pe)) => {
+                                                        st.logs.push(format!("🛡️ Format: PE (Windows)"));
+                                                        st.logs.push(format!("📐 Architecture: {}", if pe.is_64 { "64-bit" } else { "32-bit" }));
+                                                        st.logs.push(format!("📥 Imports: {}", pe.imports.len()));
+                                                        st.logs.push(format!("📤 Exports: {}", pe.exports.len()));
+                                                        st.logs.push(format!("📚 Sections: {}", pe.sections.len()));
+                                                        st.logs.push(format!("🚀 Entry Point: 0x{:x}", pe.entry));
                                                     }
-                                                });
+                                                    Ok(Object::Mach(_mach)) => {
+                                                        st.logs.push("🛡️ Format: Mach-O (macOS)".into());
+                                                    }
+                                                    Ok(_) => {
+                                                        st.logs.push("🛡️ Format: Unknown/Archive".into());
+                                                    }
+                                                    Err(e) => st.logs.push(format!("❌ Parse Error: {}", e)),
+                                                }
                                             }
+                                            Err(e) => st.logs.push(format!("❌ File Error: {}", e)),
                                         }
-                                        Err(e) => {
+                                    });
+                                } else {
+                                    tokio::spawn(async move {
+                                        let mut args: Vec<String> = cmd.split_whitespace().map(|s| s.to_string()).collect();
+
+                                        if args[0] == "clear" || args[0] == "cls" {
                                             let mut st = state_clone.lock().await;
-                                            st.logs.push(format!("❌ Failed to spawn: {}", e));
+                                            st.logs.clear();
+                                            return;
                                         }
-                                    }
-                                });
+
+                                        if args[0] == "help" {
+                                            let mut st = state_clone.lock().await;
+                                            st.logs.push("📝 Commands: info <bin>, analyze, bridge, query <cmd>, clear, quit".into());
+                                            return;
+                                        }
+
+                                        let query_cmds = [
+                                            "ping", "program_info", "list_functions", "memory_blocks", "symbols", "list_imports", "list_exports", "list_data_types", "decompile", "function_at", "function_containing", "callers", "callees", "call_graph", "control_flow_graph", "instructions_for_function", "references_to", "references_from", "search_strings", "find_symbols", "data_at", "rename_function", "set_comment", "set_plate_comment",
+                                        ];
+                                        if query_cmds.contains(&args[0].as_str()) {
+                                            args.insert(0, "query".to_string());
+                                        }
+
+                                        {
+                                            let mut st = state_clone.lock().await;
+                                            st.logs.push(format!("❯ revisor {}", args.join(" ")));
+                                        }
+
+                                        let exe = std::env::current_exe().unwrap_or_else(|_| "revisor".into());
+                                        let mut command = tokio::process::Command::new(exe);
+                                        command.args(&args);
+                                        command.stdout(Stdio::piped());
+                                        command.stderr(Stdio::piped());
+
+                                        match command.spawn() {
+                                            Ok(mut child) => {
+                                                let stdout = child.stdout.take();
+                                                let stderr = child.stderr.take();
+
+                                                if let Some(stdout) = stdout {
+                                                    let state_clone_out = state_clone.clone();
+                                                    tokio::spawn(async move {
+                                                        let mut reader = BufReader::new(stdout).lines();
+                                                        while let Ok(Some(line)) = reader.next_line().await {
+                                                            let mut st = state_clone_out.lock().await;
+                                                            st.logs.push(line);
+                                                        }
+                                                    });
+                                                }
+
+                                                if let Some(stderr) = stderr {
+                                                    let state_clone_err = state_clone.clone();
+                                                    tokio::spawn(async move {
+                                                        let mut reader = BufReader::new(stderr).lines();
+                                                        while let Ok(Some(line)) = reader.next_line().await {
+                                                            let mut st = state_clone_err.lock().await;
+                                                            st.logs.push(line);
+                                                        }
+                                                    });
+                                                }
+                                            }
+                                            Err(e) => {
+                                                let mut st = state_clone.lock().await;
+                                                st.logs.push(format!("❌ Failed to spawn: {}", e));
+                                            }
+                                        }
+                                    });
+                                }
                             }
                         }
                         _ => {}

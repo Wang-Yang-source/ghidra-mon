@@ -9,7 +9,7 @@ use std::io::Write;
 ///
 /// Search order:
 /// 1. `GHIDRA_HEADLESS` environment variable
-/// 2. `~/.ghidra-mon/ghidra/support/analyzeHeadless` (auto-installed location)
+/// 2. `~/.revisor/ghidra/support/analyzeHeadless` (auto-installed location)
 pub fn find_ghidra_headless() -> Option<String> {
     if let Ok(val) = std::env::var("GHIDRA_HEADLESS")
         && std::path::Path::new(&val).exists() {
@@ -24,7 +24,7 @@ pub fn find_ghidra_headless() -> Option<String> {
 
     if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
         let auto_path = std::path::PathBuf::from(home)
-            .join(".ghidra-mon/ghidra/support")
+            .join(".revisor/ghidra/support")
             .join(script_name);
         if auto_path.exists() {
             return Some(auto_path.to_string_lossy().to_string());
@@ -34,10 +34,10 @@ pub fn find_ghidra_headless() -> Option<String> {
     None
 }
 
-/// Download and install Ghidra to `~/.ghidra-mon/ghidra`.
+/// Download and install Ghidra to `~/.revisor/ghidra`.
 pub async fn setup_ghidra() -> Result<()> {
     let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE"))?;
-    let install_dir = std::path::PathBuf::from(home).join(".ghidra-mon");
+    let install_dir = std::path::PathBuf::from(home).join(".revisor");
     std::fs::create_dir_all(&install_dir)
         .map_err(|e| GhidraMonError::io("create install directory", e))?;
 
@@ -88,7 +88,7 @@ pub async fn setup_ghidra() -> Result<()> {
         }
     }
 
-    println!("✅ Setup Complete! Ghidra is installed to ~/.ghidra-mon/ghidra");
+    println!("✅ Setup Complete! Ghidra is installed to ~/.revisor/ghidra");
     let _ = std::fs::remove_file(zip_path);
 
     // Set execution permissions on Linux/macOS

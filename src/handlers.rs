@@ -93,7 +93,7 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
             let bridge_port = port
                 .or_else(bridge::read_bridge_port)
                 .ok_or_else(|| {
-                    eprintln!("❌ No running bridge found. Start one with 'ghidra-mon bridge' or specify --port.");
+                    eprintln!("❌ No running bridge found. Start one with 'revisor bridge' or specify --port.");
                     GhidraMonError::Bridge {
                         message: "No bridge port available".to_string(),
                     }
@@ -193,7 +193,7 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
 pub fn require_ghidra() -> Result<String> {
     setup::find_ghidra_headless().ok_or_else(|| {
         eprintln!(
-            "❌ Could not find Ghidra. Please run 'ghidra-mon setup' first to automatically download it."
+            "❌ Could not find Ghidra. Please run 'revisor setup' first to automatically download it."
         );
         GhidraMonError::GhidraNotFound
     })

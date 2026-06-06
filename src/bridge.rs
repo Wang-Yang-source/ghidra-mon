@@ -1,6 +1,6 @@
 // Bridge client for communicating with the Ghidra Java bridge TCP server.
 // Wraps TCP send/receive with typed convenience methods for each command.
-// Also handles bridge port auto-discovery via ~/.ghidra-mon/bridge.pid.
+// Also handles bridge port auto-discovery via ~/.revisor/bridge.pid.
 
 use crate::error::{GhidraMonError, Result};
 use crate::types::*;
@@ -20,7 +20,7 @@ fn bridge_pid_path() -> Option<std::path::PathBuf> {
     std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .ok()
-        .map(|h| std::path::PathBuf::from(h).join(".ghidra-mon/bridge.pid"))
+        .map(|h| std::path::PathBuf::from(h).join(".revisor/bridge.pid"))
 }
 
 /// Write the bridge port to the discovery file so MCP can find it automatically.
@@ -365,7 +365,7 @@ pub async fn run_bridge_server(
 ) -> Result<()> {
     let script_dir = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
-        .map(|h| std::path::PathBuf::from(h).join(".ghidra-mon"))
+        .map(|h| std::path::PathBuf::from(h).join(".revisor"))
         .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
 
     std::fs::create_dir_all(&script_dir).map_err(|e| GhidraMonError::io("create script dir", e))?;
@@ -408,7 +408,7 @@ pub async fn run_bridge_server(
                                     port
                                 );
                                 println!(
-                                    "   Port auto-saved to ~/.ghidra-mon/bridge.pid for MCP discovery"
+                                    "   Port auto-saved to ~/.revisor/bridge.pid for MCP discovery"
                                 );
                                 println!(
                                     "   You can now send JSON commands like {{\"command\":\"ping\"}} to 127.0.0.1:{}",

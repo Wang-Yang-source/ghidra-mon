@@ -1,12 +1,12 @@
-// ghidra-mon: Ghidra Monitor & AI MCP Unified Binary
+// revisor: Ghidra Monitor & AI MCP Unified Binary
 // Slim CLI entry point – all logic lives in the library modules.
 
 use clap::Parser;
-use ghidra_mon::cli::Cli;
-use ghidra_mon::handlers;
+use revisor::cli::Cli;
+use revisor::handlers;
 
 #[tokio::main]
-async fn main() -> Result<(), ghidra_mon::error::GhidraMonError> {
+async fn main() -> Result<(), revisor::error::GhidraMonError> {
     let cli = Cli::parse();
     handlers::handle_command(cli.command).await
 }
