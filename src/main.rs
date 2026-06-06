@@ -32,6 +32,15 @@ enum Commands {
     Setup,
     /// Start the daemon and TUI (Default if no command provided)
     Tui,
+    /// Start a persistent Java Bridge Server on a project
+    Bridge {
+        /// Project path
+        #[arg(short, long, default_value = "/tmp/ghidra_proj")]
+        project_path: String,
+        /// Project name
+        #[arg(short = 'n', long, default_value = "test")]
+        project_name: String,
+    },
     /// Import a binary into a new Ghidra project and analyze it
     Analyze {
         /// Path to the binary to analyze
@@ -83,7 +92,56 @@ pub enum DaemonResponse {
     Error(String),
 }
 
-const SOCKET_PATH: &str = "/tmp/ghidra_mon.sock";
+const SOCKET_PATH: &str = "/tmp/ghidra-mon.sock";
+const GHIDRA_BRIDGE_CODE: &str = include_str!("GhidraMonBridge.java");
+
+async fn run_bridge_server(ghidra_bin: String, project_path: String, project_name: String) -> Result<(), Box<dyn Error>> {
+    let script_dir = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE"))
+        .map(|h| std::path::PathBuf::from(h).join(".ghidra-mon"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
+    
+    std::fs::create_dir_all(&script_dir)?;
+    let script_path = script_dir.join("GhidraMonBridge.java");
+    std::fs::write(&script_path, GHIDRA_BRIDGE_CODE)?;
+    
+    println!("🚀 Starting Ghidra Bridge Server...");
+    
+    let mut child = Command::new(&ghidra_bin)
+        .arg(&project_path)
+        .arg(&project_name)
+        .arg("-process")
+        .arg("-postScript")
+        .arg(script_path.to_string_lossy().to_string())
+        .arg("-scriptPath")
+        .arg(script_dir.to_string_lossy().to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+        
+    let stdout = child.stdout.take().expect("Failed to grab stdout");
+    let mut reader = tokio::io::BufReader::new(stdout).lines();
+    
+    tokio::spawn(async move {
+        while let Ok(Some(line)) = reader.next_line().await {
+            if line.contains("---GHIDRA_MON_START---") {
+                println!("🔌 Bridge is initializing...");
+            } else if line.contains("{\"status\":\"ready\"") {
+                if let Ok(val) = serde_json::from_str::<Value>(&line) {
+                    if let Some(port) = val.get("port") {
+                        println!("✅ Bridge is now ONLINE and listening on TCP port {}", port);
+                        println!("   You can now send JSON commands like {{\"command\":\"ping\"}} to 127.0.0.1:{}", port);
+                    }
+                }
+            } else {
+                println!("[Ghidra] {}", line);
+            }
+        }
+    });
+
+    let status = child.wait().await?;
+    println!("🛑 Bridge process exited with status: {}", status);
+    Ok(())
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -97,6 +155,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         Some(Commands::Setup) => {
             setup_ghidra().await?;
+            Ok(())
+        }
+        Some(Commands::Bridge { project_path, project_name }) => {
+            let ghidra_bin = match find_ghidra_headless() {
+                Some(p) => p,
+                None => {
+                    eprintln!("❌ Could not find Ghidra. Please run 'ghidra-mon setup' first to automatically download it.");
+                    return Ok(());
+                }
+            };
+            run_bridge_server(ghidra_bin, project_path, project_name).await?;
             Ok(())
         }
         Some(Commands::Analyze { binary_path, project_path, project_name }) => {
@@ -346,6 +415,19 @@ async fn run_mcp_client() {
                                 },
                                 "required": ["project_path", "project_name", "script_name"]
                             }
+                        },
+                        {
+                            "name": "ghidra_ask_bridge",
+                            "description": "Send a fast query to a running Ghidra Bridge TCP server",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "port": { "type": "number", "description": "TCP port of the Bridge" },
+                                    "command": { "type": "string", "enum": ["ping", "list_functions", "decompile"] },
+                                    "args": { "type": "object", "description": "JSON arguments for the command (e.g. {\"function\":\"main\"})" }
+                                },
+                                "required": ["port", "command"]
+                            }
                         }
                     ]
                 });
@@ -354,23 +436,46 @@ async fn run_mcp_client() {
                 let name = req_val["params"]["name"].as_str().unwrap_or("");
                 let args = req_val["params"]["arguments"].clone();
                 
-                if let Ok(mut stream) = UnixStream::connect(SOCKET_PATH).await {
-                    let d_req = DaemonRequest::StartTask {
-                        name: name.to_string(),
-                        params: args.to_string(),
-                    };
-                    let req_str = format!("{}\n", serde_json::to_string(&d_req).unwrap());
-                    let _ = stream.write_all(req_str.as_bytes()).await;
-
-                    let mut buf = vec![0; 8192];
-                    if let Ok(n) = stream.read(&mut buf).await {
-                        let res_str = String::from_utf8_lossy(&buf[..n]);
-                        response["result"] = json!({
-                            "content": [{ "type": "text", "text": format!("Ghidra Task submitted. Daemon reply: {}", res_str.trim()) }]
-                        });
+                if name == "ghidra_ask_bridge" {
+                    let port = args["port"].as_u64().unwrap_or(0);
+                    let cmd = args["command"].as_str().unwrap_or("");
+                    let cmd_args = args["args"].clone();
+                    if let Ok(mut stream) = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await {
+                        let payload = json!({ "command": cmd, "args": cmd_args });
+                        let payload_str = format!("{}\n", serde_json::to_string(&payload).unwrap());
+                        let _ = stream.write_all(payload_str.as_bytes()).await;
+                        
+                        let mut buf = vec![0; 1024 * 1024 * 10]; // 10MB buffer
+                        if let Ok(n) = stream.read(&mut buf).await {
+                            let res_str = String::from_utf8_lossy(&buf[..n]);
+                            response["result"] = json!({
+                                "content": [{ "type": "text", "text": res_str.to_string() }]
+                            });
+                        } else {
+                            response["error"] = json!({ "code": -32000, "message": "Failed to read from bridge" });
+                        }
+                    } else {
+                        response["error"] = json!({ "code": -32000, "message": "Failed to connect to bridge TCP port" });
                     }
                 } else {
-                    response["error"] = json!({ "code": -32000, "message": "Failed to connect to daemon" });
+                    if let Ok(mut stream) = UnixStream::connect(SOCKET_PATH).await {
+                        let d_req = DaemonRequest::StartTask {
+                            name: name.to_string(),
+                            params: args.to_string(),
+                        };
+                        let req_str = format!("{}\n", serde_json::to_string(&d_req).unwrap());
+                        let _ = stream.write_all(req_str.as_bytes()).await;
+
+                        let mut buf = vec![0; 8192];
+                        if let Ok(n) = stream.read(&mut buf).await {
+                            let res_str = String::from_utf8_lossy(&buf[..n]);
+                            response["result"] = json!({
+                                "content": [{ "type": "text", "text": format!("Ghidra Task submitted. Daemon reply: {}", res_str.trim()) }]
+                            });
+                        }
+                    } else {
+                        response["error"] = json!({ "code": -32000, "message": "Failed to connect to daemon" });
+                    }
                 }
             }
             "notifications/initialized" => { continue; }
