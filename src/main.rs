@@ -126,10 +126,14 @@ async fn run_bridge_server(ghidra_bin: String, project_path: String, project_nam
             if line.contains("---GHIDRA_MON_START---") {
                 println!("🔌 Bridge is initializing...");
             } else if line.contains("{\"status\":\"ready\"") {
-                if let Ok(val) = serde_json::from_str::<Value>(&line) {
-                    if let Some(port) = val.get("port") {
-                        println!("✅ Bridge is now ONLINE and listening on TCP port {}", port);
-                        println!("   You can now send JSON commands like {{\"command\":\"ping\"}} to 127.0.0.1:{}", port);
+                if let Some(start) = line.find('{') {
+                    if let Some(end) = line.rfind('}') {
+                        if let Ok(val) = serde_json::from_str::<Value>(&line[start..=end]) {
+                            if let Some(port) = val.get("port") {
+                                println!("✅ Bridge is now ONLINE and listening on TCP port {}", port);
+                                println!("   You can now send JSON commands like {{\"command\":\"ping\"}} to 127.0.0.1:{}", port);
+                            }
+                        }
                     }
                 }
             } else {
