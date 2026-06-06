@@ -1,6 +1,6 @@
 [package]
 name = "ghidra-mon"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 description = "Ghidra Monitor & AI MCP Unified Binary for seamless reverse engineering workflows."
 license = "MIT OR Apache-2.0"
@@ -19,3 +19,4 @@ tokio = { version = "1.52.3", features = ["full"] }
 reqwest = { version = "0.12", features = ["stream"] }
 zip = "0.6"
 futures-util = "0.3"
+syntect = "5.3.0"

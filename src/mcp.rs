@@ -39,7 +39,7 @@ pub async fn run_mcp_server() {
                 response["result"] = json!({
                     "protocolVersion": "2024-11-05",
                     "capabilities": { "tools": {} },
-                    "serverInfo": { "name": "ghidra-mon", "version": "0.4.0" }
+                    "serverInfo": { "name": "ghidra-mon", "version": "0.5.0" }
                 });
             }
             "tools/list" => {

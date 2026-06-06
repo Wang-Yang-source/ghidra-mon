@@ -18,3 +18,5 @@ pub mod mcp;
 pub mod setup;
 pub mod tui;
 pub mod types;
+pub mod cli;
+pub mod handlers;
