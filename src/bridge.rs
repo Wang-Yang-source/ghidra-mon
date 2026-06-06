@@ -2,7 +2,7 @@
 // Wraps TCP send/receive with typed convenience methods for each command.
 // Also handles bridge port auto-discovery via ~/.revisor/bridge.pid.
 
-use crate::error::{GhidraMonError, Result};
+use crate::error::{RevisorError, Result};
 use crate::types::*;
 
 use serde_json::{json, Value};
@@ -11,7 +11,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
 /// Embedded Java bridge source – written to disk before launching Ghidra.
-pub(crate) const GHIDRA_BRIDGE_CODE: &str = include_str!("GhidraMonBridge.java");
+pub(crate) const GHIDRA_BRIDGE_CODE: &str = include_str!("RevisorBridge.java");
 
 // ─── Bridge Port Auto-Discovery ──────────────────────────────────────────────
 
@@ -73,7 +73,7 @@ impl BridgeClient {
     pub async fn send_command(&self, command: &str, args: Option<Value>) -> Result<Value> {
         let mut stream = tokio::net::TcpStream::connect(&self.addr)
             .await
-            .map_err(|e| GhidraMonError::Bridge {
+            .map_err(|e| RevisorError::Bridge {
                 message: format!("Failed to connect to bridge at {}: {}", self.addr, e),
             })?;
 
@@ -85,7 +85,7 @@ impl BridgeClient {
         stream
             .write_all(payload_str.as_bytes())
             .await
-            .map_err(|e| GhidraMonError::Bridge {
+            .map_err(|e| RevisorError::Bridge {
                 message: format!("Failed to write to bridge: {e}"),
             })?;
 
@@ -95,10 +95,10 @@ impl BridgeClient {
         let response_str = lines
             .next_line()
             .await
-            .map_err(|e| GhidraMonError::Bridge {
+            .map_err(|e| RevisorError::Bridge {
                 message: format!("Failed to read from bridge: {e}"),
             })?
-            .ok_or_else(|| GhidraMonError::Bridge {
+            .ok_or_else(|| RevisorError::Bridge {
                 message: "Bridge closed connection without response".to_string(),
             })?;
 
@@ -106,7 +106,7 @@ impl BridgeClient {
 
         // Check for bridge-level errors
         if let Some(err) = value.get("error").and_then(|e| e.as_str()) {
-            return Err(GhidraMonError::Bridge {
+            return Err(RevisorError::Bridge {
                 message: err.to_string(),
             });
         }
@@ -368,10 +368,10 @@ pub async fn run_bridge_server(
         .map(|h| std::path::PathBuf::from(h).join(".revisor"))
         .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
 
-    std::fs::create_dir_all(&script_dir).map_err(|e| GhidraMonError::io("create script dir", e))?;
-    let script_path = script_dir.join("GhidraMonBridge.java");
+    std::fs::create_dir_all(&script_dir).map_err(|e| RevisorError::io("create script dir", e))?;
+    let script_path = script_dir.join("RevisorBridge.java");
     std::fs::write(&script_path, GHIDRA_BRIDGE_CODE)
-        .map_err(|e| GhidraMonError::io("write bridge script", e))?;
+        .map_err(|e| RevisorError::io("write bridge script", e))?;
 
     println!("🚀 Starting Ghidra Bridge Server...");
 
@@ -386,14 +386,14 @@ pub async fn run_bridge_server(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| GhidraMonError::io("spawn Ghidra headless", e))?;
+        .map_err(|e| RevisorError::io("spawn Ghidra headless", e))?;
 
     let stdout = child.stdout.take().expect("Failed to grab stdout");
     let mut reader = tokio::io::BufReader::new(stdout).lines();
 
     tokio::spawn(async move {
         while let Ok(Some(line)) = reader.next_line().await {
-            if line.contains("---GHIDRA_MON_START---") {
+            if line.contains("---REVISOR_START---") {
                 println!("🔌 Bridge is initializing...");
             } else if line.contains("{\"status\":\"ready\"") {
                 if let Some(start) = line.find('{')
@@ -424,7 +424,7 @@ pub async fn run_bridge_server(
     let status = child
         .wait()
         .await
-        .map_err(|e| GhidraMonError::io("wait for Ghidra process", e))?;
+        .map_err(|e| RevisorError::io("wait for Ghidra process", e))?;
     remove_bridge_port_file();
     println!("🛑 Bridge process exited with status: {}", status);
     Ok(())

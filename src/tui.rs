@@ -107,7 +107,7 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
 
     {
         let mut st = state.lock().await;
-        st.logs.push("🚀 Welcome to Ghidra Mon Terminal IDE!".into());
+        st.logs.push("🚀 Welcome to Revisor Terminal IDE!".into());
         if let Some(port) = bridge_port {
             st.logs.push(format!("🔗 Connected to Bridge on port {}", port));
             st.logs.push("💡 Hotkeys: [TAB] Focus | [d] Decompiler | [x] X-Refs | [s] Strings | [Ctrl+C] Quit".into());

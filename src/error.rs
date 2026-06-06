@@ -1,11 +1,11 @@
-// Typed error handling for ghidra-mon
+// Typed error handling for revisor
 // Replaces all Box<dyn Error> usage with specific, actionable error variants.
 
 use thiserror::Error;
 
-/// All errors that can occur in ghidra-mon operations.
+/// All errors that can occur in revisor operations.
 #[derive(Error, Debug)]
-pub enum GhidraMonError {
+pub enum RevisorError {
     /// IO errors with context about what operation failed
     #[error("IO error: {operation} - {source}")]
     Io {
@@ -27,7 +27,7 @@ pub enum GhidraMonError {
     Setup(String),
 
     /// Ghidra installation not found
-    #[error("Ghidra not found. Run 'ghidra-mon setup' first.")]
+    #[error("Ghidra not found. Run 'revisor setup' first.")]
     GhidraNotFound,
 
     /// Network errors (downloads, bridge connections)
@@ -39,7 +39,7 @@ pub enum GhidraMonError {
     Other(String),
 }
 
-impl GhidraMonError {
+impl RevisorError {
     /// Create an IO error with context about what operation was being performed
     pub fn io(operation: impl Into<String>, source: std::io::Error) -> Self {
         Self::Io {
@@ -49,7 +49,7 @@ impl GhidraMonError {
     }
 }
 
-impl From<std::io::Error> for GhidraMonError {
+impl From<std::io::Error> for RevisorError {
     fn from(e: std::io::Error) -> Self {
         Self::Io {
             operation: "unknown".to_string(),
@@ -58,23 +58,23 @@ impl From<std::io::Error> for GhidraMonError {
     }
 }
 
-impl From<reqwest::Error> for GhidraMonError {
+impl From<reqwest::Error> for RevisorError {
     fn from(e: reqwest::Error) -> Self {
         Self::Network(e.to_string())
     }
 }
 
-impl From<zip::result::ZipError> for GhidraMonError {
+impl From<zip::result::ZipError> for RevisorError {
     fn from(e: zip::result::ZipError) -> Self {
         Self::Setup(format!("ZIP extraction failed: {e}"))
     }
 }
 
-impl From<std::env::VarError> for GhidraMonError {
+impl From<std::env::VarError> for RevisorError {
     fn from(e: std::env::VarError) -> Self {
         Self::Setup(format!("Environment variable error: {e}"))
     }
 }
 
 /// Convenience alias used throughout the crate.
-pub type Result<T> = std::result::Result<T, GhidraMonError>;
+pub type Result<T> = std::result::Result<T, RevisorError>;

@@ -1,4 +1,4 @@
-# Ghidra Mon 👁️
+# Revisor 👁️
 
 A **blazing fast, unified Rust CLI and AI MCP Server** for automating Ghidra reverse engineering workflows. Single binary, zero-config, 10ms query response time.
 
@@ -10,28 +10,28 @@ A **blazing fast, unified Rust CLI and AI MCP Server** for automating Ghidra rev
 
 | Feature | Description |
 |---------|-------------|
-| 🔧 **Zero-Config Setup** | `ghidra-mon setup` downloads and installs Ghidra automatically |
+| 🔧 **Zero-Config Setup** | `revisor setup` downloads and installs Ghidra automatically |
 | ⚡ **10ms Queries** | Persistent JVM Bridge keeps Ghidra in memory — no startup overhead |
 | 🤖 **22 MCP Tools** | Full AI integration via Model Context Protocol (JSON-RPC 2.0) |
-| 🔍 **CLI Query** | `ghidra-mon query` for direct command-line reverse engineering |
+| 🔍 **CLI Query** | `revisor query` for direct command-line reverse engineering |
 | 📦 **Single Binary** | Java Bridge embedded in the Rust executable, no extra scripts |
 | 🖥️ **Cyberpunk TUI** | Ratatui-powered dashboard for monitoring headless tasks |
-| 🔌 **Auto Port Discovery** | Bridge port saved to `~/.ghidra-mon/bridge.pid`, MCP auto-connects |
-| 🦀 **Library API** | `use ghidra_mon::bridge::BridgeClient` for Rust integration |
+| 🔌 **Auto Port Discovery** | Bridge port saved to `~/.revisor/bridge.pid`, MCP auto-connects |
+| 🦀 **Library API** | `use revisor::bridge::BridgeClient` for Rust integration |
 
 ## 🏗️ Architecture
 
 ```text
 ┌─────────────────────────┐         ┌──────────────────────────────────────┐
-│  AI Agent (Cursor/MCP)  │──stdio─▶│  ghidra-mon mcp  (JSON-RPC 2.0)     │
-│  Human CLI (query)      │──TCP───▶│  ghidra-mon query (direct CLI)       │
-│  Rust App (BridgeClient)│──TCP───▶│  ghidra-mon bridge (TCP server)      │
+│  AI Agent (Cursor/MCP)  │──stdio─▶│  revisor mcp  (JSON-RPC 2.0)     │
+│  Human CLI (query)      │──TCP───▶│  revisor query (direct CLI)       │
+│  Rust App (BridgeClient)│──TCP───▶│  revisor bridge (TCP server)      │
 └─────────────────────────┘         └──────────────────────────────────────┘
                                                        │
                                                  Local TCP Socket
                                                        ▼
                                     ┌──────────────────────────────────────┐
-                                    │  GhidraMonBridge.java (917 lines)    │
+                                    │  RevisorBridge.java (917 lines)    │
                                     │  25+ commands, transaction-safe      │
                                     │  Running persistently inside JVM     │
                                     └──────────────────────────────────────┘
@@ -43,14 +43,14 @@ A **blazing fast, unified Rust CLI and AI MCP Server** for automating Ghidra rev
 
 ### From Source (recommended)
 ```bash
-git clone https://github.com/Wang-Yang-source/ghidra-mon.git
-cd ghidra-mon
+git clone https://github.com/Wang-Yang-source/revisor.git
+cd revisor
 cargo install --path .
 ```
 
 ### From Crates.io
 ```bash
-cargo install ghidra-mon
+cargo install revisor
 ```
 
 ### Prerequisites
@@ -64,23 +64,23 @@ cargo install ghidra-mon
 ### Step 1: Install Ghidra (one-time)
 
 ```bash
-ghidra-mon setup
+revisor setup
 ```
 
-This downloads Ghidra 11.2 to `~/.ghidra-mon/ghidra/`. You only need to run this once.
+This downloads Ghidra 11.2 to `~/.revisor/ghidra/`. You only need to run this once.
 
 > Already have Ghidra? Set `GHIDRA_HEADLESS=/path/to/analyzeHeadless` instead.
 
 ### Step 2: Import and Analyze a Binary
 
 ```bash
-ghidra-mon analyze /path/to/binary --project-path ./my_project -n my_binary
+revisor analyze /path/to/binary --project-path ./my_project -n my_binary
 ```
 
 Example with a real binary:
 ```bash
 # Analyze the system's ls command
-ghidra-mon analyze /usr/bin/ls --project-path /tmp/ghidra_proj -n ls_analysis
+revisor analyze /usr/bin/ls --project-path /tmp/ghidra_proj -n ls_analysis
 ```
 
 Output:
@@ -94,7 +94,7 @@ INFO  REPORT: Analysis succeeded for file: /usr/bin/ls
 ### Step 3: Start the Bridge Server
 
 ```bash
-ghidra-mon bridge --project-path /tmp/ghidra_proj -n ls_analysis
+revisor bridge --project-path /tmp/ghidra_proj -n ls_analysis
 ```
 
 Output:
@@ -102,7 +102,7 @@ Output:
 🚀 Starting Ghidra Bridge Server...
 🔌 Bridge is initializing...
 ✅ Bridge is now ONLINE and listening on TCP port 36881
-   Port auto-saved to ~/.ghidra-mon/bridge.pid for MCP discovery
+   Port auto-saved to ~/.revisor/bridge.pid for MCP discovery
 ```
 
 > The bridge runs persistently. All subsequent queries are **near-instant** (no JVM startup).
@@ -113,23 +113,23 @@ The bridge port is auto-discovered — no need to specify `--port`:
 
 ```bash
 # List all functions
-ghidra-mon query list_functions
+revisor query list_functions
 
 # Decompile a function
-ghidra-mon query decompile main
+revisor query decompile main
 
 # Get callers/callees
-ghidra-mon query callers validate_password
-ghidra-mon query callees main
+revisor query callers validate_password
+revisor query callees main
 
 # Search strings
-ghidra-mon query search_strings password
+revisor query search_strings password
 
 # Get disassembly
-ghidra-mon query instructions_for_function main
+revisor query instructions_for_function main
 
 # Cross-references
-ghidra-mon query references_to 0x00401000
+revisor query references_to 0x00401000
 ```
 
 ### Step 5: Connect AI Agent via MCP
@@ -139,7 +139,7 @@ Add to your MCP config (Cursor, Claude Desktop, etc.):
 {
   "mcpServers": {
     "ghidra": {
-      "command": "ghidra-mon",
+      "command": "revisor",
       "args": ["mcp"]
     }
   }
@@ -152,23 +152,23 @@ That's it! The AI can now call any of the 22 Ghidra tools directly.
 
 ## 💻 CLI Reference
 
-### `ghidra-mon setup`
+### `revisor setup`
 
 Download and install Ghidra automatically.
 
 ```bash
-ghidra-mon setup
+revisor setup
 ```
-- Installs to `~/.ghidra-mon/ghidra/`
+- Installs to `~/.revisor/ghidra/`
 - Sets execution permissions automatically
 - Only needs to run once
 
-### `ghidra-mon analyze`
+### `revisor analyze`
 
 Import a binary into a Ghidra project and run auto-analysis.
 
 ```bash
-ghidra-mon analyze <BINARY_PATH> [OPTIONS]
+revisor analyze <BINARY_PATH> [OPTIONS]
 
 Options:
   -p, --project-path <PATH>  Project directory [default: /tmp/ghidra_proj]
@@ -178,21 +178,21 @@ Options:
 Examples:
 ```bash
 # Basic analysis
-ghidra-mon analyze ./malware.exe
+revisor analyze ./malware.exe
 
 # Custom project location
-ghidra-mon analyze ./firmware.bin -p ~/ghidra_projects -n firmware_v2
+revisor analyze ./firmware.bin -p ~/ghidra_projects -n firmware_v2
 
 # Analyze a CTF challenge
-ghidra-mon analyze ./crackme -p /tmp/ctf -n crackme
+revisor analyze ./crackme -p /tmp/ctf -n crackme
 ```
 
-### `ghidra-mon bridge`
+### `revisor bridge`
 
 Start the persistent Java Bridge TCP server on an analyzed project.
 
 ```bash
-ghidra-mon bridge [OPTIONS]
+revisor bridge [OPTIONS]
 
 Options:
   -p, --project-path <PATH>  Project directory [default: /tmp/ghidra_proj]
@@ -201,16 +201,16 @@ Options:
 
 Example:
 ```bash
-ghidra-mon bridge -p /tmp/ctf -n crackme
-# Bridge starts on a random TCP port, auto-saved to ~/.ghidra-mon/bridge.pid
+revisor bridge -p /tmp/ctf -n crackme
+# Bridge starts on a random TCP port, auto-saved to ~/.revisor/bridge.pid
 ```
 
-### `ghidra-mon query`
+### `revisor query`
 
 Query the running Bridge directly from the command line.
 
 ```bash
-ghidra-mon query <COMMAND> [ARG] [EXTRA_ARGS...] [OPTIONS]
+revisor query <COMMAND> [ARG] [EXTRA_ARGS...] [OPTIONS]
 
 Options:
   -p, --port <PORT>      Bridge port (auto-discovered if omitted)
@@ -222,88 +222,88 @@ Options:
 
 ```bash
 # Program metadata
-ghidra-mon query ping
-ghidra-mon query program_info
-ghidra-mon query list_functions
-ghidra-mon query memory_blocks
-ghidra-mon query symbols
-ghidra-mon query list_imports
-ghidra-mon query list_exports
-ghidra-mon query list_data_types
+revisor query ping
+revisor query program_info
+revisor query list_functions
+revisor query memory_blocks
+revisor query symbols
+revisor query list_imports
+revisor query list_exports
+revisor query list_data_types
 
 # Decompilation (by function name)
-ghidra-mon query decompile main
-ghidra-mon query decompile validate_password
+revisor query decompile main
+revisor query decompile validate_password
 
 # Function lookup (by address)
-ghidra-mon query function_at 0x00401000
-ghidra-mon query function_containing 0x00401050
+revisor query function_at 0x00401000
+revisor query function_containing 0x00401050
 
 # Call graph
-ghidra-mon query callers some_function
-ghidra-mon query callees main
-ghidra-mon query call_graph
+revisor query callers some_function
+revisor query callees main
+revisor query call_graph
 
 # Disassembly
-ghidra-mon query instructions_for_function main
+revisor query instructions_for_function main
 
 # Cross-references
-ghidra-mon query references_to 0x00401000
-ghidra-mon query references_from 0x00401000
+revisor query references_to 0x00401000
+revisor query references_from 0x00401000
 
 # Strings and symbols
-ghidra-mon query search_strings "password"
-ghidra-mon query find_symbols main
+revisor query search_strings "password"
+revisor query find_symbols main
 
 # Data
-ghidra-mon query data_at 0x00402000
+revisor query data_at 0x00402000
 
 # Control flow graph
-ghidra-mon query control_flow_graph main
+revisor query control_flow_graph main
 ```
 
 #### Write Commands (use `--json` for multiple args)
 
 ```bash
 # Rename a function
-ghidra-mon query rename_function --json '{"function":"FUN_00401000","new_name":"decrypt_payload"}'
+revisor query rename_function --json '{"function":"FUN_00401000","new_name":"decrypt_payload"}'
 
 # Set inline comment at an address
-ghidra-mon query set_comment --json '{"address":"0x00401000","comment":"XOR decrypt loop"}'
+revisor query set_comment --json '{"address":"0x00401000","comment":"XOR decrypt loop"}'
 
 # Set plate comment on a function
-ghidra-mon query set_plate_comment --json '{"function":"main","comment":"Entry point"}'
+revisor query set_plate_comment --json '{"function":"main","comment":"Entry point"}'
 ```
 
 #### Output Formats
 
 ```bash
 # Pretty-printed JSON (default)
-ghidra-mon query decompile main
+revisor query decompile main
 
 # Compact JSON (for scripting/piping)
-ghidra-mon query decompile main -f json
+revisor query decompile main -f json
 
 # Pipe to jq
-ghidra-mon query list_functions -f json | jq '.functions[].name'
+revisor query list_functions -f json | jq '.functions[].name'
 ```
 
-### `ghidra-mon mcp`
+### `revisor mcp`
 
 Run the MCP (Model Context Protocol) server over stdio.
 
 ```bash
-ghidra-mon mcp
+revisor mcp
 ```
 
 This is normally called by the AI agent, not by the user directly. It reads JSON-RPC 2.0 requests from stdin and writes responses to stdout.
 
-### `ghidra-mon run-script`
+### `revisor run-script`
 
 Run a Ghidra script on an existing project.
 
 ```bash
-ghidra-mon run-script <SCRIPT_NAME> [OPTIONS]
+revisor run-script <SCRIPT_NAME> [OPTIONS]
 
 Options:
   -p, --project-path <PATH>  Project directory [default: /tmp/ghidra_proj]
@@ -312,16 +312,16 @@ Options:
 
 Example:
 ```bash
-ghidra-mon run-script MyCustomScript.java -p /tmp/ctf -n crackme
+revisor run-script MyCustomScript.java -p /tmp/ctf -n crackme
 ```
 
-### `ghidra-mon tui`
+### `revisor tui`
 
 Launch the Cyberpunk TUI dashboard (also the default when no command is given).
 
 ```bash
-ghidra-mon       # same as ghidra-mon tui
-ghidra-mon tui
+revisor       # same as revisor tui
+revisor tui
 ```
 
 Press `q` to quit the TUI.
@@ -378,20 +378,20 @@ All tools auto-discover the bridge port — the `port` parameter is optional.
 
 ## 🦀 Rust Library API
 
-`ghidra-mon` can be used as a library in your own Rust projects:
+`revisor` can be used as a library in your own Rust projects:
 
 ```toml
 [dependencies]
-ghidra-mon = "0.3"
+revisor = "0.3"
 ```
 
 ```rust
-use ghidra_mon::bridge::BridgeClient;
+use revisor::bridge::BridgeClient;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Auto-discover bridge port, or specify manually
-    let port = ghidra_mon::bridge::read_bridge_port()
+    let port = revisor::bridge::read_bridge_port()
         .expect("No running bridge found");
     let client = BridgeClient::new(port);
 
@@ -460,18 +460,18 @@ Here's a complete example using the included [crackme](tests/crackme.c) test bin
 
 ### 1. Analyze the binary
 ```bash
-ghidra-mon analyze tests/crackme -p /tmp/ctf -n crackme
+revisor analyze tests/crackme -p /tmp/ctf -n crackme
 ```
 
 ### 2. Start the bridge
 ```bash
-ghidra-mon bridge -p /tmp/ctf -n crackme
+revisor bridge -p /tmp/ctf -n crackme
 # ✅ Bridge is now ONLINE on port 36881
 ```
 
 ### 3. Discover the password
 ```bash
-$ ghidra-mon query decompile validate_password
+$ revisor query decompile validate_password
 
 # Output reveals:
 # if (((sVar1 == 8) && (*param_1 == 'R')) && (param_1[1] == 'E'))
@@ -484,15 +484,15 @@ $ ghidra-mon query decompile validate_password
 
 ### 4. Find the XOR key
 ```bash
-$ ghidra-mon query decompile xor_decrypt
+$ revisor query decompile xor_decrypt
 
-# "GhidraMon2024"[(int)lVar1 % 0xd] ^ *(byte *)(param_1 + lVar1)
-# → XOR Key: GhidraMon2024
+# "Revisor2024"[(int)lVar1 % 0xd] ^ *(byte *)(param_1 + lVar1)
+# → XOR Key: Revisor2024
 ```
 
 ### 5. Discover hidden functions
 ```bash
-$ ghidra-mon query callees main
+$ revisor query callees main
 
 # → validate_password, print_banner, check_license, secret_function
 # secret_function is only called when check_license passes!
@@ -500,8 +500,8 @@ $ ghidra-mon query callees main
 
 ### 6. Annotate your findings
 ```bash
-ghidra-mon query rename_function --json '{"function":"secret_function","new_name":"decrypt_secret_message"}'
-ghidra-mon query set_comment --json '{"address":"0x00400591","comment":"Password: REV3RSE!"}'
+revisor query rename_function --json '{"function":"secret_function","new_name":"decrypt_secret_message"}'
+revisor query set_comment --json '{"address":"0x00400591","comment":"Password: REV3RSE!"}'
 ```
 
 ---
@@ -509,7 +509,7 @@ ghidra-mon query set_comment --json '{"address":"0x00400591","comment":"Password
 ## 🗂️ Project Structure
 
 ```
-ghidra-mon/
+revisor/
 ├── Cargo.toml                    # Dependencies & metadata
 ├── README.md                     # This file
 ├── src/
@@ -522,7 +522,7 @@ ghidra-mon/
 │   ├── setup.rs                  # Ghidra download & install
 │   ├── types.rs                  # Shared types (24 structs)
 │   ├── error.rs                  # Typed errors (thiserror)
-│   └── GhidraMonBridge.java      # Embedded Java bridge (917 lines)
+│   └── RevisorBridge.java      # Embedded Java bridge (917 lines)
 └── tests/
     ├── crackme.c                 # Reverse engineering test target
     ├── crackme                   # Compiled test binary
@@ -535,9 +535,9 @@ ghidra-mon/
 
 This project was inspired by and references the work of:
 
-- **[ghidra-cli](https://github.com/akiselev/ghidra-cli)** by [@akiselev](https://github.com/akiselev) — A Rust CLI for headless Ghidra automation. Its architectural approach and CLI design patterns provided valuable reference during the development of `ghidra-mon`. 🦀
+- **[ghidra-cli](https://github.com/akiselev/ghidra-cli)** by [@akiselev](https://github.com/akiselev) — A Rust CLI for headless Ghidra automation. Its architectural approach and CLI design patterns provided valuable reference during the development of `revisor`. 🦀
 - **[ghidra-rs](https://crates.io/crates/ghidra)** by [@ooojustin](https://github.com/ooojustin) — Typed Rust bindings for an embedded Ghidra JVM via JNI. Its elegant API design with Rust-native lifetime safety inspired the typed `BridgeClient` API.
 
 ## 📄 License
 
-MIT OR Apache-2.0.
+GPL-3.0-or-later.

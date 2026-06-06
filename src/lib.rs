@@ -1,11 +1,11 @@
-// revisor: Ghidra Monitor & AI MCP Unified Binary
+// revisor: Revisoritor & AI MCP Unified Binary
 //
 // This is the library entry point, allowing other Rust projects to use
 // revisor as a dependency for programmatic Ghidra access.
 //
 // Example usage:
 // ```rust
-// use ghidra_mon::bridge::BridgeClient;
+// use revisor::bridge::BridgeClient;
 //
 // let client = BridgeClient::new(12345);
 // let functions = client.list_functions().await?;

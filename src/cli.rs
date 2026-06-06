@@ -80,7 +80,7 @@ pub enum Commands {
         /// Additional key=value arguments (e.g. new_name=foo comment="hello")
         #[arg(trailing_var_arg = true, help = "Additional args formatted as key=value")]
         extra_args: Vec<String>,
-        /// Override the bridge TCP port (auto-discovered from /tmp/ghidra-mon-bridge.port if not specified)
+        /// Override the bridge TCP port (auto-discovered from /tmp/revisor-bridge.port if not specified)
         #[arg(short, long, help = "Bridge TCP port (if auto-discovery fails)")]
         port: Option<u16>,
         /// Pass raw JSON args string instead of key=value (e.g. --json '{"function":"main"}')

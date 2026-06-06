@@ -1,4 +1,4 @@
-// GhidraMonBridge - Comprehensive TCP bridge for Ghidra-Mon
+// RevisorBridge - Comprehensive TCP bridge for Revisor
 // Provides ~25 commands for full Ghidra programmatic access from Rust/AI agents.
 //
 // Architecture: Runs as a GhidraScript inside the Ghidra JVM. Opens a TCP
@@ -29,7 +29,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonArray;
 
-public class GhidraMonBridge extends GhidraScript {
+public class RevisorBridge extends GhidraScript {
 
     private static final int MAX_RESULTS = 5000;
     private Gson gson;
@@ -42,14 +42,14 @@ public class GhidraMonBridge extends GhidraScript {
         port = serverSocket.getLocalPort();
 
         // Readiness notification protocol
-        println("---GHIDRA_MON_START---");
+        println("---REVISOR_START---");
         JsonObject readyMsg = new JsonObject();
         readyMsg.addProperty("status", "ready");
         readyMsg.addProperty("port", port);
         readyMsg.addProperty("program", currentProgram.getName());
         readyMsg.addProperty("language", currentProgram.getLanguageID().toString());
         println(gson.toJson(readyMsg));
-        println("---GHIDRA_MON_END---");
+        println("---REVISOR_END---");
 
         boolean running = true;
         while (running) {

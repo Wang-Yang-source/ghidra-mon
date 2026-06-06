@@ -1,4 +1,4 @@
-// Typed data structures for ghidra-mon
+// Typed data structures for revisor
 // All structs that cross module boundaries or represent wire formats live here.
 
 use serde::{Deserialize, Serialize};

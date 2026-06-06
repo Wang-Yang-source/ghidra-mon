@@ -1,5 +1,5 @@
 use crate::cli::Commands;
-use crate::error::{GhidraMonError, Result};
+use crate::error::{RevisorError, Result};
 use crate::{bridge, daemon, mcp, setup, tui, types::*};
 
 use std::sync::Arc;
@@ -39,11 +39,11 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
                 .arg("-import")
                 .arg(&binary_path)
                 .spawn()
-                .map_err(|e| GhidraMonError::io("spawn Ghidra headless", e))?;
+                .map_err(|e| RevisorError::io("spawn Ghidra headless", e))?;
             let status = child
                 .wait()
                 .await
-                .map_err(|e| GhidraMonError::io("wait for Ghidra", e))?;
+                .map_err(|e| RevisorError::io("wait for Ghidra", e))?;
             if status.success() {
                 println!("✅ Analysis complete!");
             } else {
@@ -70,11 +70,11 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
                 .arg("-postScript")
                 .arg(&script_name)
                 .spawn()
-                .map_err(|e| GhidraMonError::io("spawn Ghidra script", e))?;
+                .map_err(|e| RevisorError::io("spawn Ghidra script", e))?;
             let status = child
                 .wait()
                 .await
-                .map_err(|e| GhidraMonError::io("wait for Ghidra script", e))?;
+                .map_err(|e| RevisorError::io("wait for Ghidra script", e))?;
             if status.success() {
                 println!("✅ Script execution complete!");
             } else {
@@ -94,7 +94,7 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
                 .or_else(bridge::read_bridge_port)
                 .ok_or_else(|| {
                     eprintln!("❌ No running bridge found. Start one with 'revisor bridge' or specify --port.");
-                    GhidraMonError::Bridge {
+                    RevisorError::Bridge {
                         message: "No bridge port available".to_string(),
                     }
                 })?;
@@ -103,7 +103,7 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
 
             let args = if let Some(json_str) = json {
                 let parsed: serde_json::Value = serde_json::from_str(&json_str)
-                    .map_err(|e| GhidraMonError::Other(format!("Invalid JSON: {e}")))?;
+                    .map_err(|e| RevisorError::Other(format!("Invalid JSON: {e}")))?;
                 Some(parsed)
             } else if arg.is_some() || !extra_args.is_empty() {
                 let mut map = serde_json::Map::new();
@@ -195,6 +195,6 @@ pub fn require_ghidra() -> Result<String> {
         eprintln!(
             "❌ Could not find Ghidra. Please run 'revisor setup' first to automatically download it."
         );
-        GhidraMonError::GhidraNotFound
+        RevisorError::GhidraNotFound
     })
 }

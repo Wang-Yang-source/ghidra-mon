@@ -1,7 +1,7 @@
 // Ghidra setup and discovery utilities.
 // Handles automatic download, extraction, and locating the analyzeHeadless script.
 
-use crate::error::{GhidraMonError, Result};
+use crate::error::{RevisorError, Result};
 
 use std::io::Write;
 
@@ -39,7 +39,7 @@ pub async fn setup_ghidra() -> Result<()> {
     let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE"))?;
     let install_dir = std::path::PathBuf::from(home).join(".revisor");
     std::fs::create_dir_all(&install_dir)
-        .map_err(|e| GhidraMonError::io("create install directory", e))?;
+        .map_err(|e| RevisorError::io("create install directory", e))?;
 
     // We will use Ghidra 11.2_PUBLIC as an example
     let ghidra_url = "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_11.2_build/ghidra_11.2_PUBLIC_20240926.zip";
@@ -48,30 +48,30 @@ pub async fn setup_ghidra() -> Result<()> {
     println!("🚀 Downloading Ghidra 11.2 (this might take a while depending on your connection)...");
     let response = reqwest::get(ghidra_url).await?;
     let mut file = std::fs::File::create(&zip_path)
-        .map_err(|e| GhidraMonError::io("create ghidra.zip", e))?;
+        .map_err(|e| RevisorError::io("create ghidra.zip", e))?;
 
     use futures_util::StreamExt;
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
         file.write_all(&chunk)
-            .map_err(|e| GhidraMonError::io("write download chunk", e))?;
+            .map_err(|e| RevisorError::io("write download chunk", e))?;
     }
 
     println!("📦 Extracting Ghidra...");
     let file = std::fs::File::open(&zip_path)
-        .map_err(|e| GhidraMonError::io("open ghidra.zip for extraction", e))?;
+        .map_err(|e| RevisorError::io("open ghidra.zip for extraction", e))?;
     let mut archive = zip::ZipArchive::new(file)?;
     archive.extract(&install_dir)?;
 
     // Rename extracted dir to "ghidra"
     for entry in std::fs::read_dir(&install_dir)
-        .map_err(|e| GhidraMonError::io("read install directory", e))?
+        .map_err(|e| RevisorError::io("read install directory", e))?
     {
-        let entry = entry.map_err(|e| GhidraMonError::io("read directory entry", e))?;
+        let entry = entry.map_err(|e| RevisorError::io("read directory entry", e))?;
         if entry
             .file_type()
-            .map_err(|e| GhidraMonError::io("check file type", e))?
+            .map_err(|e| RevisorError::io("check file type", e))?
             .is_dir()
         {
             let name = entry.file_name().to_string_lossy().to_string();
@@ -79,10 +79,10 @@ pub async fn setup_ghidra() -> Result<()> {
                 let final_dir = install_dir.join("ghidra");
                 if final_dir.exists() {
                     std::fs::remove_dir_all(&final_dir)
-                        .map_err(|e| GhidraMonError::io("remove old ghidra dir", e))?;
+                        .map_err(|e| RevisorError::io("remove old ghidra dir", e))?;
                 }
                 std::fs::rename(entry.path(), &final_dir)
-                    .map_err(|e| GhidraMonError::io("rename ghidra directory", e))?;
+                    .map_err(|e| RevisorError::io("rename ghidra directory", e))?;
                 break;
             }
         }
@@ -98,11 +98,11 @@ pub async fn setup_ghidra() -> Result<()> {
         let analyze_headless = install_dir.join("ghidra/support/analyzeHeadless");
         if analyze_headless.exists() {
             let mut perms = std::fs::metadata(&analyze_headless)
-                .map_err(|e| GhidraMonError::io("read headless permissions", e))?
+                .map_err(|e| RevisorError::io("read headless permissions", e))?
                 .permissions();
             perms.set_mode(0o755);
             std::fs::set_permissions(&analyze_headless, perms)
-                .map_err(|e| GhidraMonError::io("set headless permissions", e))?;
+                .map_err(|e| RevisorError::io("set headless permissions", e))?;
         }
     }
 
