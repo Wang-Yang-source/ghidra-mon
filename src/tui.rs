@@ -1,73 +1,38 @@
-// TUI dashboard for revisor.
-// Cyberpunk-themed ratatui interface acting as a Terminal IDE Artifact.
+// Ghidrai terminal workspace.
+// The TUI presents a unified toolkit surface over pluggable backends.
 
-use crate::bridge::{read_bridge_port, BridgeClient};
+mod binary_info;
+mod commands;
+mod events;
+mod highlight;
+mod model;
+mod runner;
+
+use crate::adapter::schema::ToolEvent;
+use crate::bridge::{BridgeClient, read_bridge_port};
 use crate::error::Result;
 use crate::types::*;
+use model::{ActivePane, AppTab, EventView};
 
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseEventKind},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs, Wrap},
-    Terminal,
 };
-use goblin::Object;
-use std::fs;
-use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use syntect::easy::HighlightLines;
-use syntect::highlighting::{ThemeSet, Style as SyntectStyle};
-use syntect::parsing::SyntaxSet;
 use std::{io, sync::Arc, time::Duration};
+use syntect::highlighting::ThemeSet;
+use syntect::parsing::SyntaxSet;
 use tokio::sync::Mutex;
 
 pub const SOCKET_PATH: &str = "/tmp/revisor.sock";
-
-#[derive(PartialEq, Clone, Copy)]
-enum AppTab {
-    Decompiler,
-    XRefs,
-    Strings,
-}
-
-#[derive(PartialEq, Clone, Copy)]
-enum ActivePane {
-    Sidebar,
-    Input,
-}
-
-/// Professional syntax highlighter using `syntect` for VSCode-level code coloring.
-fn highlight_c_code_syntect<'a>(code: &'a str, ps: &SyntaxSet, ts: &ThemeSet) -> Vec<Line<'a>> {
-    let syntax = ps.find_syntax_by_extension("c").unwrap_or_else(|| ps.find_syntax_plain_text());
-    let mut h = HighlightLines::new(syntax, &ts.themes["base16-ocean.dark"]);
-
-    code.lines()
-        .map(|line| {
-            let ranges: Vec<(SyntectStyle, &str)> = h.highlight_line(line, ps).unwrap_or_default();
-            let spans: Vec<Span> = ranges
-                .into_iter()
-                .map(|(style, text)| {
-                    Span::styled(
-                        text.to_string(),
-                        Style::default().fg(ratatui::style::Color::Rgb(
-                            style.foreground.r,
-                            style.foreground.g,
-                            style.foreground.b,
-                        )),
-                    )
-                })
-                .collect();
-            Line::from(spans)
-        })
-        .collect()
-}
 
 pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
     enable_raw_mode()?;
@@ -79,22 +44,25 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
     let mut input = String::new();
     let mut active_pane = ActivePane::Input;
     let mut app_tab = AppTab::Decompiler;
+    let mut event_view = EventView::Structured;
 
     // Command History & Suggestions
     let mut command_history: Vec<String> = Vec::new();
     let mut history_index: Option<usize> = None;
     let mut history_search_prefix: String = String::new();
-    let mut suggestions: Vec<String> = Vec::new();
+    let mut suggestions: Vec<String>;
     let mut suggestion_index: usize = 0;
 
     // Data State
     let mut functions: Vec<FunctionInfo> = Vec::new();
     let mut list_state = ListState::default();
-    
+
     let mut strings: Vec<StringResult> = Vec::new();
     let mut strings_list_state = ListState::default();
 
-    let mut decompiled_code = String::from("Press TAB to focus the Functions List.\nUse Up/Down to navigate, and Enter to Decompile.\nUse Mouse Scroll to scroll the list.\nPress 'x' to view X-Refs, 's' for Strings, 'd' for Decompiler.");
+    let mut decompiled_code = String::from(
+        "No decompiler result loaded.\n\nUse the command console to run:\n  analyze <bin> -p <project_dir> -n <project_name>\n  bridge -p <project_dir> -n <project_name>\n\nThen focus the symbol list with TAB and press Enter to decompile.",
+    );
     let mut callers: Vec<FunctionInfo> = Vec::new();
     let mut callees: Vec<FunctionInfo> = Vec::new();
 
@@ -107,13 +75,28 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
 
     {
         let mut st = state.lock().await;
-        st.logs.push("🚀 Welcome to Revisor Terminal IDE!".into());
+        st.logs.push(events::event_line(ToolEvent::status(
+            "tui",
+            "Ghidrai toolkit workspace ready.",
+        )));
         if let Some(port) = bridge_port {
-            st.logs.push(format!("🔗 Connected to Bridge on port {}", port));
-            st.logs.push("💡 Hotkeys: [TAB] Focus | [d] Decompiler | [x] X-Refs | [s] Strings | [Ctrl+C] Quit".into());
+            st.logs.push(events::event_line(ToolEvent::status(
+                "ghidra",
+                format!("bridge connected on port {}", port),
+            )));
+            st.logs.push(events::event_line(ToolEvent::status(
+                "tui",
+                "keys: TAB focus | d decompile | x xrefs | s strings | t toolkit | v event view | Ctrl+C quit",
+            )));
         } else {
-            st.logs.push("⚠️ No Bridge found. Press [ESC] to focus input, then type 'analyze <bin> -p <proj> -n <name>'".into());
-            st.logs.push("   followed by 'bridge -p <proj> -n <name>' to start analyzing!".into());
+            st.logs.push(events::event_line(ToolEvent::status(
+                "tui",
+                "no Ghidra bridge detected; local toolkit commands remain available.",
+            )));
+            st.logs.push(events::event_line(ToolEvent::status(
+                "tui",
+                "try: info <bin>, toolkit binwalk <bin>, toolkit checksec <bin>, toolkit rop <bin>",
+            )));
         }
     }
 
@@ -147,8 +130,14 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
             if let Some(port) = read_bridge_port() {
                 bridge_port = Some(port);
                 let mut st = state.lock().await;
-                st.logs.push(format!("🔗 自动检测到 Bridge 上线 (Port {})! 正在拉取数据...", port));
-                
+                st.logs.push(events::event_line(ToolEvent::status(
+                    "ghidra",
+                    format!(
+                        "bridge detected on port {}; loading symbols and strings",
+                        port
+                    ),
+                )));
+
                 let client = BridgeClient::new(port);
                 let tx_f = tx_funcs.clone();
                 let tx_s = tx_strings.clone();
@@ -163,27 +152,11 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
             }
         }
 
-        // Compute Suggestions
-        suggestions.clear();
-        if active_pane == ActivePane::Input && !input.is_empty() {
-            let cmds = ["analyze", "bridge", "query", "clear", "quit", "help", "setup", "mcp", "info"];
-            let queries = ["decompile", "list_functions", "ping", "search_strings", "callers", "callees", "program_info", "memory_blocks", "symbols"];
-            
-            let parts: Vec<&str> = input.split_whitespace().collect();
-            if input.ends_with(' ') || parts.len() > 1 {
-                if let Some(&"query") = parts.first() {
-                    let second = if parts.len() > 1 && !input.ends_with(' ') { parts[1] } else { "" };
-                    suggestions = queries.iter().filter(|q| q.starts_with(second)).map(|s| s.to_string()).collect();
-                } else if input.ends_with("-") || parts.last().unwrap_or(&"").starts_with("-") {
-                    let last = parts.last().unwrap_or(&"");
-                    let flags = ["--help", "-p", "-n", "--json", "--port", "--version"];
-                    suggestions = flags.iter().filter(|f| f.starts_with(last)).map(|s| s.to_string()).collect();
-                }
-            } else {
-                let first = parts.first().unwrap_or(&"");
-                suggestions = cmds.iter().filter(|c| c.starts_with(first)).map(|s| s.to_string()).collect();
-            }
-        }
+        suggestions = if active_pane == ActivePane::Input {
+            commands::suggestions(&input)
+        } else {
+            Vec::new()
+        };
         if suggestion_index >= suggestions.len() {
             suggestion_index = 0;
         }
@@ -225,17 +198,19 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
 
             // 1. Tabs
             let titles = vec![
-                Line::from(" [d] 💻 Decompiler "),
-                Line::from(" [x] 🕸️ Cross-References "),
-                Line::from(" [s] 🔍 Strings "),
+                Line::from(" [d] Decompile "),
+                Line::from(" [x] Xrefs "),
+                Line::from(" [s] Strings "),
+                Line::from(" [t] Toolkit "),
             ];
             let tab_index = match app_tab {
                 AppTab::Decompiler => 0,
                 AppTab::XRefs => 1,
                 AppTab::Strings => 2,
+                AppTab::Toolkit => 3,
             };
             let tabs = Tabs::new(titles)
-                .block(Block::default().borders(Borders::ALL).title(" 🗂️ VIEWS "))
+                .block(Block::default().borders(Borders::ALL).title(" Workspace "))
                 .select(tab_index)
                 .style(Style::default().fg(Color::DarkGray))
                 .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
@@ -251,78 +226,118 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                 .split(main_chunks[1]);
 
             // Sidebar rendering (Functions or Strings depending on tab)
-            let sidebar_border = if active_pane == ActivePane::Sidebar { Color::Yellow } else { Color::DarkGray };
-            
+            let sidebar_border = if active_pane == ActivePane::Sidebar {
+                Color::Yellow
+            } else {
+                Color::DarkGray
+            };
+
             if app_tab == AppTab::Strings {
                 let str_items: Vec<ListItem> = strings
                     .iter()
                     .map(|s| ListItem::new(format!("{} | {}", s.address, s.value)))
                     .collect();
                 let str_list = List::new(str_items)
-                    .block(Block::default().title(" 📋 STRINGS (TAB focus) ").borders(Borders::ALL).border_style(Style::default().fg(sidebar_border)))
+                    .block(Block::default().title(" Strings ").borders(Borders::ALL).border_style(Style::default().fg(sidebar_border)))
                     .highlight_style(Style::default().bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD))
-                    .highlight_symbol("▶ ");
-                f.render_stateful_widget(str_list, main_chunks[1], &mut strings_list_state);
+                    .highlight_symbol("> ");
+                f.render_stateful_widget(str_list, ide_chunks[0], &mut strings_list_state);
+
+                let detail = if let Some(i) = strings_list_state.selected() {
+                    strings
+                        .get(i)
+                        .map(|s| {
+                            format!(
+                                "Adapter: Ghidra\nAddress: {}\nValue:\n{}",
+                                s.address, s.value
+                            )
+                        })
+                        .unwrap_or_else(|| "No string selected.".to_string())
+                } else {
+                    "No strings loaded. Start a backend adapter or run a toolkit command from the console.".to_string()
+                };
+                let detail_block = Paragraph::new(detail)
+                    .block(Block::default().title(" String Detail ").borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)))
+                    .wrap(Wrap { trim: false });
+                f.render_widget(detail_block, ide_chunks[1]);
+            } else if app_tab == AppTab::Toolkit {
+                let tools = [
+                    "info <bin>              binary format and section summary",
+                    "toolkit binwalk <bin>   firmware signatures and embedded structures",
+                    "toolkit checksec <bin>  ELF hardening features",
+                    "toolkit rop <bin>       ROP gadget discovery",
+                    "toolkit rizin <bin>     Rizin JSON static analysis",
+                    "analyze <bin> ...       import into the Ghidra backend adapter",
+                    "bridge ...              start the Ghidra backend adapter",
+                    "query <cmd> ...         inspect a running backend adapter",
+                ];
+                let tool_items: Vec<ListItem> = tools.iter().map(|tool| ListItem::new(*tool)).collect();
+                let tool_list = List::new(tool_items)
+                    .block(Block::default().title(" Tool Adapters ").borders(Borders::ALL).border_style(Style::default().fg(sidebar_border)))
+                    .highlight_symbol("> ");
+                f.render_widget(tool_list, ide_chunks[0]);
+
+                let detail = "Ghidrai treats every engine as an adapter.\n\nThe TUI shows structured events and keeps raw stdout/stderr in the event log. Ghidra and Rizin are static-analysis backends; Binwalk, checksec and ROP adapters are toolkit engines available from the command console.";
+                let detail_block = Paragraph::new(detail)
+                    .block(Block::default().title(" Adapter Model ").borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)))
+                    .wrap(Wrap { trim: false });
+                f.render_widget(detail_block, ide_chunks[1]);
             } else {
                 let func_items: Vec<ListItem> = functions
                     .iter()
                     .map(|func| ListItem::new(format!("{} @ {}", func.name, func.address)))
                     .collect();
                 let func_list = List::new(func_items)
-                    .block(Block::default().title(" 📋 FUNCTIONS (TAB focus) ").borders(Borders::ALL).border_style(Style::default().fg(sidebar_border)))
+                    .block(Block::default().title(" Functions ").borders(Borders::ALL).border_style(Style::default().fg(sidebar_border)))
                     .highlight_style(Style::default().bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD))
-                    .highlight_symbol("▶ ");
+                    .highlight_symbol("> ");
                 f.render_stateful_widget(func_list, ide_chunks[0], &mut list_state);
 
                 // Main content rendering (Decompiler or XRefs)
                 if app_tab == AppTab::Decompiler {
-                    let highlighted_lines = highlight_c_code_syntect(&decompiled_code, &ps, &ts);
+                    let highlighted_lines = highlight::c_code(&decompiled_code, &ps, &ts);
                     let code_block = Paragraph::new(highlighted_lines)
-                        .block(Block::default().title(" 💻 DECOMPILED C SOURCE ").borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)))
+                        .block(Block::default().title(" Decompiled C ").borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)))
                         .wrap(Wrap { trim: false });
                     f.render_widget(code_block, ide_chunks[1]);
                 } else if app_tab == AppTab::XRefs {
-                    let xrefs_chunks = Layout::default().direction(Direction::Vertical).constraints([Constraint::Percentage(50), Constraint::Percentage(50)]).split(ide_chunks[1]);
-                    
+                    let xrefs_chunks = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                        .split(ide_chunks[1]);
+
                     let callers_items: Vec<ListItem> = callers.iter().map(|f| ListItem::new(format!("{} @ {}", f.name, f.address))).collect();
                     let callers_list = List::new(callers_items)
-                        .block(Block::default().title(" ⬆️ CALLERS ").borders(Borders::ALL).border_style(Style::default().fg(Color::LightMagenta)));
+                        .block(Block::default().title(" Callers ").borders(Borders::ALL).border_style(Style::default().fg(Color::LightMagenta)));
                     f.render_widget(callers_list, xrefs_chunks[0]);
 
                     let callees_items: Vec<ListItem> = callees.iter().map(|f| ListItem::new(format!("{} @ {}", f.name, f.address))).collect();
                     let callees_list = List::new(callees_items)
-                        .block(Block::default().title(" ⬇️ CALLEES ").borders(Borders::ALL).border_style(Style::default().fg(Color::LightBlue)));
+                        .block(Block::default().title(" Callees ").borders(Borders::ALL).border_style(Style::default().fg(Color::LightBlue)));
                     f.render_widget(callees_list, xrefs_chunks[1]);
                 }
             }
 
             // 3. Logs Area
-            let log_items: Vec<ListItem> = st.logs.iter().rev().take(15).map(|l| ListItem::new(l.clone())).collect();
+            let log_items: Vec<ListItem> = events::visible_logs(&st.logs, event_view, 15)
+                .into_iter()
+                .map(ListItem::new)
+                .collect();
             let logs_block = List::new(log_items).block(
-                Block::default().title(" 📡 TERMINAL & EVENT LOGS ").borders(Borders::ALL).border_style(Style::default().fg(Color::DarkGray)),
+                Block::default().title(event_view.title()).borders(Borders::ALL).border_style(Style::default().fg(Color::DarkGray)),
             );
             f.render_widget(logs_block, main_chunks[2]);
 
             // Compute Ghost Text (Fish style)
-            let mut ghost_text = String::new();
-            if active_pane == ActivePane::Input && !input.is_empty() {
-                if let Some(hist) = command_history.iter().rev().find(|h| h.starts_with(&input) && *h != &input) {
-                    ghost_text = hist[input.len()..].to_string();
-                } else {
-                    let parts: Vec<&str> = input.split_whitespace().collect();
-                    if !input.ends_with(' ') {
-                        if let Some(last) = parts.last() {
-                            if let Some(sugg) = suggestions.iter().find(|s| s.starts_with(*last)) {
-                                ghost_text = sugg[last.len()..].to_string();
-                            }
-                        }
-                    }
-                }
-            }
+            let ghost_text = if active_pane == ActivePane::Input {
+                commands::ghost_text(&input, &command_history, &suggestions)
+            } else {
+                String::new()
+            };
 
             let input_border = if active_pane == ActivePane::Input { Color::Green } else { Color::DarkGray };
             let title = if !suggestions.is_empty() && active_pane == ActivePane::Input {
-                let mut sugg_str = String::from(" ⌨️ COMMAND CONSOLE | Suggestions: ");
+                let mut sugg_str = String::from(" Command Console | Suggestions: ");
                 for (i, s) in suggestions.iter().enumerate() {
                     if i == suggestion_index {
                         sugg_str.push_str(&format!("[{}] ", s));
@@ -332,7 +347,7 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                 }
                 sugg_str
             } else {
-                String::from(" ⌨️ COMMAND CONSOLE (Fish-style: Right arrow to autocomplete) ")
+                String::from(" Command Console | Right arrow accepts completion ")
             };
 
             let line = Line::from(vec![
@@ -354,19 +369,39 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                         continue;
                     }
                     match key.code {
-                        KeyCode::Esc => { 
+                        KeyCode::Esc => {
                             // Focus input instead of quitting
-                            active_pane = ActivePane::Input; 
+                            active_pane = ActivePane::Input;
                         }
-                        KeyCode::Char('c') | KeyCode::Char('q') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => { break; }
+                        KeyCode::Char('c') | KeyCode::Char('q')
+                            if key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
+                            break;
+                        }
                         KeyCode::Tab => {
-                            active_pane = if active_pane == ActivePane::Input { ActivePane::Sidebar } else { ActivePane::Input };
+                            active_pane = if active_pane == ActivePane::Input {
+                                ActivePane::Sidebar
+                            } else {
+                                ActivePane::Input
+                            };
                         }
-                        
+                        KeyCode::Char('v') => {
+                            event_view = event_view.toggle();
+                            let mut st = state.lock().await;
+                            st.logs.push(events::event_line(ToolEvent::status(
+                                "tui",
+                                format!("event log switched to {}", event_view.title().trim()),
+                            )));
+                        }
+
                         // Global hotkeys to switch tabs
-                        KeyCode::Char('d') if active_pane == ActivePane::Sidebar => { app_tab = AppTab::Decompiler; }
-                        KeyCode::Char('x') if active_pane == ActivePane::Sidebar => { 
-                            app_tab = AppTab::XRefs; 
+                        KeyCode::Char('d') if active_pane == ActivePane::Sidebar => {
+                            app_tab = AppTab::Decompiler;
+                        }
+                        KeyCode::Char('x') if active_pane == ActivePane::Sidebar => {
+                            app_tab = AppTab::XRefs;
                             // Trigger xrefs fetch for current selected function
                             if let Some(i) = list_state.selected() {
                                 if let Some(f) = functions.get(i) {
@@ -376,52 +411,101 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                                     tokio::spawn(async move {
                                         if let Some(p) = port {
                                             let client = BridgeClient::new(p);
-                                            let callers = client.callers(&func_name).await.unwrap_or_default();
-                                            let callees = client.callees(&func_name).await.unwrap_or_default();
+                                            let callers = client
+                                                .callers(&func_name)
+                                                .await
+                                                .unwrap_or_default();
+                                            let callees = client
+                                                .callees(&func_name)
+                                                .await
+                                                .unwrap_or_default();
                                             let _ = tx.send((callers, callees)).await;
                                         }
                                     });
                                 }
                             }
                         }
-                        KeyCode::Char('s') if active_pane == ActivePane::Sidebar => { app_tab = AppTab::Strings; }
+                        KeyCode::Char('s') if active_pane == ActivePane::Sidebar => {
+                            app_tab = AppTab::Strings;
+                        }
+                        KeyCode::Char('t') if active_pane == ActivePane::Sidebar => {
+                            app_tab = AppTab::Toolkit;
+                        }
 
                         // Navigation in Sidebar
                         KeyCode::Up if active_pane == ActivePane::Sidebar => {
                             if app_tab == AppTab::Strings {
-                                let i = match strings_list_state.selected() { Some(i) => if i == 0 { 0 } else { i - 1 }, None => 0 };
+                                let i = match strings_list_state.selected() {
+                                    Some(i) => {
+                                        if i == 0 {
+                                            0
+                                        } else {
+                                            i - 1
+                                        }
+                                    }
+                                    None => 0,
+                                };
                                 strings_list_state.select(Some(i));
                             } else {
-                                let i = match list_state.selected() { Some(i) => if i == 0 { 0 } else { i - 1 }, None => 0 };
+                                let i = match list_state.selected() {
+                                    Some(i) => {
+                                        if i == 0 {
+                                            0
+                                        } else {
+                                            i - 1
+                                        }
+                                    }
+                                    None => 0,
+                                };
                                 list_state.select(Some(i));
                             }
                         }
                         KeyCode::Down if active_pane == ActivePane::Sidebar => {
                             if app_tab == AppTab::Strings {
-                                let i = match strings_list_state.selected() { Some(i) => if i >= strings.len().saturating_sub(1) { strings.len().saturating_sub(1) } else { i + 1 }, None => 0 };
+                                let i = match strings_list_state.selected() {
+                                    Some(i) => {
+                                        if i >= strings.len().saturating_sub(1) {
+                                            strings.len().saturating_sub(1)
+                                        } else {
+                                            i + 1
+                                        }
+                                    }
+                                    None => 0,
+                                };
                                 strings_list_state.select(Some(i));
                             } else {
-                                let i = match list_state.selected() { Some(i) => if i >= functions.len().saturating_sub(1) { functions.len().saturating_sub(1) } else { i + 1 }, None => 0 };
+                                let i = match list_state.selected() {
+                                    Some(i) => {
+                                        if i >= functions.len().saturating_sub(1) {
+                                            functions.len().saturating_sub(1)
+                                        } else {
+                                            i + 1
+                                        }
+                                    }
+                                    None => 0,
+                                };
                                 list_state.select(Some(i));
                             }
                         }
-                        
+
                         // Execution
                         KeyCode::Enter if active_pane == ActivePane::Sidebar => {
                             if app_tab == AppTab::Decompiler || app_tab == AppTab::XRefs {
                                 if let Some(i) = list_state.selected() {
                                     if let Some(f) = functions.get(i) {
                                         let func_name = f.name.clone();
-                                        
+
                                         // Fetch Decompile
                                         let tx_dec = tx_decompile.clone();
                                         let port = bridge_port;
-                                        decompiled_code = format!("⏳ Decompiling {}...", func_name);
+                                        decompiled_code = format!("Decompiling {}...", func_name);
                                         let func_name_dec = func_name.clone();
                                         tokio::spawn(async move {
                                             if let Some(p) = port {
                                                 let client = BridgeClient::new(p);
-                                                if let Ok(res) = client.decompile(&func_name_dec).await {
+                                                if let Ok(res) =
+                                                    client.decompile(&func_name_dec).await
+                                                {
                                                     if let Some(c_code) = res.c_code {
                                                         let _ = tx_dec.send(c_code).await;
                                                     }
@@ -435,8 +519,14 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                                         tokio::spawn(async move {
                                             if let Some(p) = port {
                                                 let client = BridgeClient::new(p);
-                                                let callers = client.callers(&func_name2).await.unwrap_or_default();
-                                                let callees = client.callees(&func_name2).await.unwrap_or_default();
+                                                let callers = client
+                                                    .callers(&func_name2)
+                                                    .await
+                                                    .unwrap_or_default();
+                                                let callees = client
+                                                    .callees(&func_name2)
+                                                    .await
+                                                    .unwrap_or_default();
                                                 let _ = tx_x.send((callers, callees)).await;
                                             }
                                         });
@@ -446,13 +536,13 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                         }
 
                         // Input Mode Handling
-                        KeyCode::Char(c) if active_pane == ActivePane::Input => { 
-                            input.push(c); 
+                        KeyCode::Char(c) if active_pane == ActivePane::Input => {
+                            input.push(c);
                             history_index = None;
                             history_search_prefix.clear();
                         }
-                        KeyCode::Backspace if active_pane == ActivePane::Input => { 
-                            input.pop(); 
+                        KeyCode::Backspace if active_pane == ActivePane::Input => {
+                            input.pop();
                             history_index = None;
                             history_search_prefix.clear();
                         }
@@ -462,13 +552,13 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                                     history_search_prefix = input.clone();
                                 }
                                 let mut start_idx = history_index.unwrap_or(command_history.len());
-                                let mut found = false;
                                 while start_idx > 0 {
                                     start_idx -= 1;
-                                    if command_history[start_idx].starts_with(&history_search_prefix) {
+                                    if command_history[start_idx]
+                                        .starts_with(&history_search_prefix)
+                                    {
                                         history_index = Some(start_idx);
                                         input = command_history[start_idx].clone();
-                                        found = true;
                                         break;
                                     }
                                 }
@@ -480,7 +570,8 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                                 let mut found = false;
                                 while curr_idx + 1 < command_history.len() {
                                     curr_idx += 1;
-                                    if command_history[curr_idx].starts_with(&history_search_prefix) {
+                                    if command_history[curr_idx].starts_with(&history_search_prefix)
+                                    {
                                         history_index = Some(curr_idx);
                                         input = command_history[curr_idx].clone();
                                         found = true;
@@ -494,28 +585,7 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                             }
                         }
                         KeyCode::Right if active_pane == ActivePane::Input => {
-                            // Fish-style: Autocomplete ghost text
-                            let mut ghost_text = String::new();
-                            if !input.is_empty() {
-                                if let Some(hist) = command_history.iter().rev().find(|h| h.starts_with(&input) && *h != &input) {
-                                    ghost_text = hist[input.len()..].to_string();
-                                } else {
-                                    let parts: Vec<&str> = input.split_whitespace().collect();
-                                    if !input.ends_with(' ') {
-                                        if let Some(last) = parts.last() {
-                                            if let Some(sugg) = suggestions.iter().find(|s| s.starts_with(*last)) {
-                                                ghost_text = sugg[last.len()..].to_string();
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            if !ghost_text.is_empty() {
-                                input.push_str(&ghost_text);
-                                if !input.ends_with(' ') {
-                                    input.push(' ');
-                                }
-                            }
+                            commands::accept_completion(&mut input, &command_history, &suggestions);
                         }
                         KeyCode::Enter if active_pane == ActivePane::Input => {
                             let cmd = input.trim().to_string();
@@ -524,112 +594,14 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                             history_search_prefix.clear();
                             if !cmd.is_empty() {
                                 command_history.push(cmd.clone());
-                                if cmd == "quit" || cmd == "exit" || cmd == "q" { break; }
+                                if cmd == "quit" || cmd == "exit" || cmd == "q" {
+                                    break;
+                                }
 
                                 let state_clone = Arc::clone(&state);
-                                if cmd.starts_with("info ") {
-                                    let target = cmd.trim_start_matches("info ").trim().to_string();
-                                    tokio::spawn(async move {
-                                        let mut st = state_clone.lock().await;
-                                        st.logs.push(format!("⚡ Fast Static Analysis on: {}", target));
-                                        match fs::read(&target) {
-                                            Ok(buffer) => {
-                                                match Object::parse(&buffer) {
-                                                    Ok(Object::Elf(elf)) => {
-                                                        st.logs.push(format!("🛡️ Format: ELF"));
-                                                        st.logs.push(format!("📐 Architecture: {}", if elf.is_64 { "64-bit" } else { "32-bit" }));
-                                                        st.logs.push(format!("📥 Dynamic Symbols: {}", elf.dynsyms.len()));
-                                                        st.logs.push(format!("📚 Sections: {}", elf.section_headers.len()));
-                                                        st.logs.push(format!("🚀 Entry Point: 0x{:x}", elf.header.e_entry));
-                                                    }
-                                                    Ok(Object::PE(pe)) => {
-                                                        st.logs.push(format!("🛡️ Format: PE (Windows)"));
-                                                        st.logs.push(format!("📐 Architecture: {}", if pe.is_64 { "64-bit" } else { "32-bit" }));
-                                                        st.logs.push(format!("📥 Imports: {}", pe.imports.len()));
-                                                        st.logs.push(format!("📤 Exports: {}", pe.exports.len()));
-                                                        st.logs.push(format!("📚 Sections: {}", pe.sections.len()));
-                                                        st.logs.push(format!("🚀 Entry Point: 0x{:x}", pe.entry));
-                                                    }
-                                                    Ok(Object::Mach(_mach)) => {
-                                                        st.logs.push("🛡️ Format: Mach-O (macOS)".into());
-                                                    }
-                                                    Ok(_) => {
-                                                        st.logs.push("🛡️ Format: Unknown/Archive".into());
-                                                    }
-                                                    Err(e) => st.logs.push(format!("❌ Parse Error: {}", e)),
-                                                }
-                                            }
-                                            Err(e) => st.logs.push(format!("❌ File Error: {}", e)),
-                                        }
-                                    });
-                                } else {
-                                    tokio::spawn(async move {
-                                        let mut args: Vec<String> = cmd.split_whitespace().map(|s| s.to_string()).collect();
-
-                                        if args[0] == "clear" || args[0] == "cls" {
-                                            let mut st = state_clone.lock().await;
-                                            st.logs.clear();
-                                            return;
-                                        }
-
-                                        if args[0] == "help" {
-                                            let mut st = state_clone.lock().await;
-                                            st.logs.push("📝 Commands: info <bin>, analyze, bridge, query <cmd>, clear, quit".into());
-                                            return;
-                                        }
-
-                                        let query_cmds = [
-                                            "ping", "program_info", "list_functions", "memory_blocks", "symbols", "list_imports", "list_exports", "list_data_types", "decompile", "function_at", "function_containing", "callers", "callees", "call_graph", "control_flow_graph", "instructions_for_function", "references_to", "references_from", "search_strings", "find_symbols", "data_at", "rename_function", "set_comment", "set_plate_comment",
-                                        ];
-                                        if query_cmds.contains(&args[0].as_str()) {
-                                            args.insert(0, "query".to_string());
-                                        }
-
-                                        {
-                                            let mut st = state_clone.lock().await;
-                                            st.logs.push(format!("❯ revisor {}", args.join(" ")));
-                                        }
-
-                                        let exe = std::env::current_exe().unwrap_or_else(|_| "revisor".into());
-                                        let mut command = tokio::process::Command::new(exe);
-                                        command.args(&args);
-                                        command.stdout(Stdio::piped());
-                                        command.stderr(Stdio::piped());
-
-                                        match command.spawn() {
-                                            Ok(mut child) => {
-                                                let stdout = child.stdout.take();
-                                                let stderr = child.stderr.take();
-
-                                                if let Some(stdout) = stdout {
-                                                    let state_clone_out = state_clone.clone();
-                                                    tokio::spawn(async move {
-                                                        let mut reader = BufReader::new(stdout).lines();
-                                                        while let Ok(Some(line)) = reader.next_line().await {
-                                                            let mut st = state_clone_out.lock().await;
-                                                            st.logs.push(line);
-                                                        }
-                                                    });
-                                                }
-
-                                                if let Some(stderr) = stderr {
-                                                    let state_clone_err = state_clone.clone();
-                                                    tokio::spawn(async move {
-                                                        let mut reader = BufReader::new(stderr).lines();
-                                                        while let Ok(Some(line)) = reader.next_line().await {
-                                                            let mut st = state_clone_err.lock().await;
-                                                            st.logs.push(line);
-                                                        }
-                                                    });
-                                                }
-                                            }
-                                            Err(e) => {
-                                                let mut st = state_clone.lock().await;
-                                                st.logs.push(format!("❌ Failed to spawn: {}", e));
-                                            }
-                                        }
-                                    });
-                                }
+                                tokio::spawn(async move {
+                                    runner::run_console_command(state_clone, cmd).await;
+                                });
                             }
                         }
                         _ => {}
@@ -640,19 +612,55 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                         match mouse.kind {
                             MouseEventKind::ScrollDown => {
                                 if app_tab == AppTab::Strings {
-                                    let i = match strings_list_state.selected() { Some(i) => if i >= strings.len().saturating_sub(1) { strings.len().saturating_sub(1) } else { i + 1 }, None => 0 };
+                                    let i = match strings_list_state.selected() {
+                                        Some(i) => {
+                                            if i >= strings.len().saturating_sub(1) {
+                                                strings.len().saturating_sub(1)
+                                            } else {
+                                                i + 1
+                                            }
+                                        }
+                                        None => 0,
+                                    };
                                     strings_list_state.select(Some(i));
                                 } else {
-                                    let i = match list_state.selected() { Some(i) => if i >= functions.len().saturating_sub(1) { functions.len().saturating_sub(1) } else { i + 1 }, None => 0 };
+                                    let i = match list_state.selected() {
+                                        Some(i) => {
+                                            if i >= functions.len().saturating_sub(1) {
+                                                functions.len().saturating_sub(1)
+                                            } else {
+                                                i + 1
+                                            }
+                                        }
+                                        None => 0,
+                                    };
                                     list_state.select(Some(i));
                                 }
                             }
                             MouseEventKind::ScrollUp => {
                                 if app_tab == AppTab::Strings {
-                                    let i = match strings_list_state.selected() { Some(i) => if i == 0 { 0 } else { i - 1 }, None => 0 };
+                                    let i = match strings_list_state.selected() {
+                                        Some(i) => {
+                                            if i == 0 {
+                                                0
+                                            } else {
+                                                i - 1
+                                            }
+                                        }
+                                        None => 0,
+                                    };
                                     strings_list_state.select(Some(i));
                                 } else {
-                                    let i = match list_state.selected() { Some(i) => if i == 0 { 0 } else { i - 1 }, None => 0 };
+                                    let i = match list_state.selected() {
+                                        Some(i) => {
+                                            if i == 0 {
+                                                0
+                                            } else {
+                                                i - 1
+                                            }
+                                        }
+                                        None => 0,
+                                    };
                                     list_state.select(Some(i));
                                 }
                             }
@@ -663,12 +671,15 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                                             let func_name = f.name.clone();
                                             let tx_dec = tx_decompile.clone();
                                             let port = bridge_port;
-                                            decompiled_code = format!("⏳ Decompiling {}...", func_name);
+                                            decompiled_code =
+                                                format!("Decompiling {}...", func_name);
                                             let func_name_dec = func_name.clone();
                                             tokio::spawn(async move {
                                                 if let Some(p) = port {
                                                     let client = BridgeClient::new(p);
-                                                    if let Ok(res) = client.decompile(&func_name_dec).await {
+                                                    if let Ok(res) =
+                                                        client.decompile(&func_name_dec).await
+                                                    {
                                                         if let Some(c_code) = res.c_code {
                                                             let _ = tx_dec.send(c_code).await;
                                                         }
@@ -681,8 +692,14 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                                             tokio::spawn(async move {
                                                 if let Some(p) = port {
                                                     let client = BridgeClient::new(p);
-                                                    let callers = client.callers(&func_name2).await.unwrap_or_default();
-                                                    let callees = client.callees(&func_name2).await.unwrap_or_default();
+                                                    let callers = client
+                                                        .callers(&func_name2)
+                                                        .await
+                                                        .unwrap_or_default();
+                                                    let callees = client
+                                                        .callees(&func_name2)
+                                                        .await
+                                                        .unwrap_or_default();
                                                     let _ = tx_x.send((callers, callees)).await;
                                                 }
                                             });

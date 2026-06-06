@@ -2,10 +2,10 @@
 // Wraps TCP send/receive with typed convenience methods for each command.
 // Also handles bridge port auto-discovery via ~/.revisor/bridge.pid.
 
-use crate::error::{RevisorError, Result};
+use crate::error::{Result, RevisorError};
 use crate::types::*;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::process::Command;
@@ -23,15 +23,10 @@ fn bridge_pid_path() -> Option<std::path::PathBuf> {
         .map(|h| std::path::PathBuf::from(h).join(".revisor/bridge.pid"))
 }
 
-/// Write the bridge port to the discovery file so MCP can find it automatically.
+/// Write the bridge port to the discovery file for local compatibility adapters.
 pub fn write_bridge_port(port: u16, project: &str) {
     if let Some(path) = bridge_pid_path() {
-        let content = format!(
-            "{}\n{}\n{}",
-            port,
-            std::process::id(),
-            project
-        );
+        let content = format!("{}\n{}\n{}", port, std::process::id(), project);
         let _ = std::fs::write(&path, content);
     }
 }
@@ -157,10 +152,7 @@ impl BridgeClient {
     /// Get the function containing a specific address.
     pub async fn function_containing(&self, address: &str) -> Result<FunctionInfo> {
         let val = self
-            .send_command(
-                "function_containing",
-                Some(json!({ "address": address })),
-            )
+            .send_command("function_containing", Some(json!({ "address": address })))
             .await?;
         Ok(serde_json::from_value(val)?)
     }
@@ -170,10 +162,7 @@ impl BridgeClient {
         let val = self
             .send_command("callers", Some(json!({ "function": function })))
             .await?;
-        let callers = val
-            .get("callers")
-            .cloned()
-            .unwrap_or(Value::Array(vec![]));
+        let callers = val.get("callers").cloned().unwrap_or(Value::Array(vec![]));
         Ok(serde_json::from_value(callers)?)
     }
 
@@ -182,10 +171,7 @@ impl BridgeClient {
         let val = self
             .send_command("callees", Some(json!({ "function": function })))
             .await?;
-        let callees = val
-            .get("callees")
-            .cloned()
-            .unwrap_or(Value::Array(vec![]));
+        let callees = val.get("callees").cloned().unwrap_or(Value::Array(vec![]));
         Ok(serde_json::from_value(callees)?)
     }
 
@@ -212,10 +198,7 @@ impl BridgeClient {
     pub async fn symbols(&self, symbol_type: Option<&str>) -> Result<Vec<SymbolInfo>> {
         let args = symbol_type.map(|t| json!({ "type": t }));
         let val = self.send_command("symbols", args).await?;
-        let symbols = val
-            .get("symbols")
-            .cloned()
-            .unwrap_or(Value::Array(vec![]));
+        let symbols = val.get("symbols").cloned().unwrap_or(Value::Array(vec![]));
         Ok(serde_json::from_value(symbols)?)
     }
 
@@ -224,10 +207,7 @@ impl BridgeClient {
         let val = self
             .send_command("find_symbols", Some(json!({ "query": query })))
             .await?;
-        let symbols = val
-            .get("symbols")
-            .cloned()
-            .unwrap_or(Value::Array(vec![]));
+        let symbols = val.get("symbols").cloned().unwrap_or(Value::Array(vec![]));
         Ok(serde_json::from_value(symbols)?)
     }
 
@@ -260,10 +240,7 @@ impl BridgeClient {
         let val = self
             .send_command("search_strings", Some(json!({ "query": query })))
             .await?;
-        let strings = val
-            .get("strings")
-            .cloned()
-            .unwrap_or(Value::Array(vec![]));
+        let strings = val.get("strings").cloned().unwrap_or(Value::Array(vec![]));
         Ok(serde_json::from_value(strings)?)
     }
 
@@ -277,10 +254,7 @@ impl BridgeClient {
     /// Get control flow graph for a function.
     pub async fn control_flow_graph(&self, function: &str) -> Result<ControlFlowGraph> {
         let val = self
-            .send_command(
-                "control_flow_graph",
-                Some(json!({ "function": function })),
-            )
+            .send_command("control_flow_graph", Some(json!({ "function": function })))
             .await?;
         Ok(serde_json::from_value(val)?)
     }
@@ -288,20 +262,14 @@ impl BridgeClient {
     /// List imported symbols.
     pub async fn list_imports(&self) -> Result<Vec<ImportInfo>> {
         let val = self.send_command("list_imports", None).await?;
-        let imports = val
-            .get("imports")
-            .cloned()
-            .unwrap_or(Value::Array(vec![]));
+        let imports = val.get("imports").cloned().unwrap_or(Value::Array(vec![]));
         Ok(serde_json::from_value(imports)?)
     }
 
     /// List exported symbols.
     pub async fn list_exports(&self) -> Result<Vec<ExportInfo>> {
         let val = self.send_command("list_exports", None).await?;
-        let exports = val
-            .get("exports")
-            .cloned()
-            .unwrap_or(Value::Array(vec![]));
+        let exports = val.get("exports").cloned().unwrap_or(Value::Array(vec![]));
         Ok(serde_json::from_value(exports)?)
     }
 
@@ -373,7 +341,7 @@ pub async fn run_bridge_server(
     std::fs::write(&script_path, GHIDRA_BRIDGE_CODE)
         .map_err(|e| RevisorError::io("write bridge script", e))?;
 
-    println!("🚀 Starting Ghidra Bridge Server...");
+    println!("[adapter:ghidra] starting bridge backend");
 
     let mut child = Command::new(&ghidra_bin)
         .arg(&project_path)
@@ -394,27 +362,20 @@ pub async fn run_bridge_server(
     tokio::spawn(async move {
         while let Ok(Some(line)) = reader.next_line().await {
             if line.contains("---REVISOR_START---") {
-                println!("🔌 Bridge is initializing...");
+                println!("[adapter:ghidra] bridge initializing");
             } else if line.contains("{\"status\":\"ready\"") {
                 if let Some(start) = line.find('{')
                     && let Some(end) = line.rfind('}')
-                        && let Ok(val) = serde_json::from_str::<Value>(&line[start..=end])
-                            && let Some(port) = val.get("port") {
-                                let port_num = port.as_u64().unwrap_or(0) as u16;
-                                // Write port to discovery file so MCP can find it
-                                write_bridge_port(port_num, "bridge");
-                                println!(
-                                    "✅ Bridge is now ONLINE and listening on TCP port {}",
-                                    port
-                                );
-                                println!(
-                                    "   Port auto-saved to ~/.revisor/bridge.pid for MCP discovery"
-                                );
-                                println!(
-                                    "   You can now send JSON commands like {{\"command\":\"ping\"}} to 127.0.0.1:{}",
-                                    port
-                                );
-                            }
+                    && let Ok(val) = serde_json::from_str::<Value>(&line[start..=end])
+                    && let Some(port) = val.get("port")
+                {
+                    let port_num = port.as_u64().unwrap_or(0) as u16;
+                    // Write port to discovery file for local compatibility adapters.
+                    write_bridge_port(port_num, "bridge");
+                    println!("[adapter:ghidra] bridge ready on TCP port {}", port);
+                    println!("[adapter:ghidra] discovery file: ~/.revisor/bridge.pid");
+                    println!("[adapter:ghidra] JSON command endpoint: 127.0.0.1:{}", port);
+                }
             } else {
                 println!("[Ghidra] {}", line);
             }
@@ -426,6 +387,9 @@ pub async fn run_bridge_server(
         .await
         .map_err(|e| RevisorError::io("wait for Ghidra process", e))?;
     remove_bridge_port_file();
-    println!("🛑 Bridge process exited with status: {}", status);
+    println!(
+        "[adapter:ghidra] bridge process exited with status: {}",
+        status
+    );
     Ok(())
 }

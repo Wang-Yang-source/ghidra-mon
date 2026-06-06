@@ -1,5 +1,5 @@
 use crate::cli::Commands;
-use crate::error::{RevisorError, Result};
+use crate::error::{Result, RevisorError};
 use crate::{bridge, daemon, mcp, setup, tui, types::*};
 
 use std::sync::Arc;
@@ -32,7 +32,10 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
         }) => {
             let ghidra_bin = require_ghidra()?;
             let _ = std::fs::create_dir_all(&project_path);
-            println!("🚀 Running Ghidra Headless Analysis on {}...", binary_path);
+            println!(
+                "[adapter:ghidra] importing {} with Ghidra headless",
+                binary_path
+            );
             let mut child = tokio::process::Command::new(&ghidra_bin)
                 .arg(&project_path)
                 .arg(&project_name)
@@ -45,11 +48,9 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
                 .await
                 .map_err(|e| RevisorError::io("wait for Ghidra", e))?;
             if status.success() {
-                println!("✅ Analysis complete!");
+                println!("[adapter:ghidra] analysis complete");
             } else {
-                eprintln!(
-                    "❌ Analysis failed. It is possible the binary could not be imported."
-                );
+                eprintln!("[error] Ghidra analysis failed. The binary may not have been imported.");
             }
             Ok(())
         }
@@ -60,7 +61,7 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
         }) => {
             let ghidra_bin = require_ghidra()?;
             println!(
-                "🚀 Running Ghidra Script {} on project {}...",
+                "[adapter:ghidra] running script {} on project {}",
                 script_name, project_name
             );
             let mut child = tokio::process::Command::new(&ghidra_bin)
@@ -76,9 +77,9 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
                 .await
                 .map_err(|e| RevisorError::io("wait for Ghidra script", e))?;
             if status.success() {
-                println!("✅ Script execution complete!");
+                println!("[adapter:ghidra] script execution complete");
             } else {
-                eprintln!("❌ Script execution failed.");
+                eprintln!("[error] Ghidra script execution failed.");
             }
             Ok(())
         }
@@ -93,7 +94,7 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
             let bridge_port = port
                 .or_else(bridge::read_bridge_port)
                 .ok_or_else(|| {
-                    eprintln!("❌ No running bridge found. Start one with 'revisor bridge' or specify --port.");
+                    eprintln!("[error] no running Ghidra bridge adapter found. Start one with 'revisor bridge' or specify --port.");
                     RevisorError::Bridge {
                         message: "No bridge port available".to_string(),
                     }
@@ -131,13 +132,54 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
                 Ok(result) => {
                     if format == "json" {
                         println!("{}", serde_json::to_string(&result).unwrap_or_default());
+                    } else if format == "events" {
+                        for event in
+                            crate::adapter::ghidra::bridge_response_to_events(&command, &result)
+                        {
+                            println!("{}", serde_json::to_string(&event).unwrap_or_default());
+                        }
                     } else {
-                        println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&result).unwrap_or_default()
+                        );
                     }
                 }
                 Err(e) => {
-                    eprintln!("❌ Bridge error: {}", e);
+                    eprintln!("[error] bridge adapter error: {}", e);
                     return Err(e);
+                }
+            }
+            Ok(())
+        }
+        Some(Commands::Toolkit(tk_cmd)) => {
+            use crate::adapter::ToolAdapter;
+            use crate::cli::ToolkitCommands;
+            use crate::toolkit::{binwalk, checksec, rizin, rop};
+            match tk_cmd {
+                ToolkitCommands::Binwalk { file_path, format } => {
+                    let adapter = binwalk::BinwalkAdapter;
+                    print_tool_events(adapter.run(&file_path)?, &format)?;
+                }
+                ToolkitCommands::Checksec { file_path, format } => {
+                    let adapter = checksec::ChecksecAdapter;
+                    print_tool_events(adapter.run(&file_path)?, &format)?;
+                }
+                ToolkitCommands::Rop { file_path, format } => {
+                    let adapter = rop::RopAdapter;
+                    print_tool_events(adapter.run(&file_path)?, &format)?;
+                }
+                ToolkitCommands::Rizin {
+                    file_path,
+                    action,
+                    query,
+                    format,
+                } => {
+                    let adapter = rizin::RizinAdapter {
+                        action: rizin::RizinAction::parse(&action)?,
+                        query,
+                    };
+                    print_tool_events(adapter.run(&file_path)?, &format)?;
                 }
             }
             Ok(())
@@ -145,7 +187,9 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
         None | Some(Commands::Tui) => {
             let state = Arc::new(Mutex::new(DaemonState {
                 tasks: Vec::new(),
-                logs: vec!["[INFO] Daemon initialized. Listening for MCP...".to_string()],
+                logs: vec![
+                    "[INFO] Ghidrai workspace initialized. Tool adapters are ready.".to_string(),
+                ],
             }));
 
             let daemon_state = state.clone();
@@ -166,8 +210,7 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
                                         if line.trim().is_empty() {
                                             continue;
                                         }
-                                        if let Ok(req) =
-                                            serde_json::from_str::<DaemonRequest>(line)
+                                        if let Ok(req) = serde_json::from_str::<DaemonRequest>(line)
                                         {
                                             daemon::handle_daemon_request(
                                                 req,
@@ -193,8 +236,26 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
 pub fn require_ghidra() -> Result<String> {
     setup::find_ghidra_headless().ok_or_else(|| {
         eprintln!(
-            "❌ Could not find Ghidra. Please run 'revisor setup' first to automatically download it."
+            "[error] could not find Ghidra. Run 'revisor setup' first to install the optional Ghidra backend."
         );
         RevisorError::GhidraNotFound
     })
+}
+
+fn print_tool_events(events: Vec<crate::adapter::schema::ToolEvent>, format: &str) -> Result<()> {
+    if format == "json" {
+        for event in events {
+            println!(
+                "{}",
+                serde_json::to_string(&event)
+                    .map_err(|e| RevisorError::Other(format!("serialize tool event: {e}")))?
+            );
+        }
+    } else {
+        for event in events {
+            println!("{}", event.message);
+        }
+    }
+
+    Ok(())
 }

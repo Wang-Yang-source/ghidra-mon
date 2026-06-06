@@ -4,7 +4,7 @@
 use crate::setup::find_ghidra_headless;
 use crate::types::*;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
@@ -61,9 +61,8 @@ pub async fn handle_daemon_request(
                     Some(p) => p,
                     None => {
                         let mut st = state_bg.lock().await;
-                        st.logs.push(
-                            "[ERROR] Could not find Ghidra. Run 'revisor setup'".to_string(),
-                        );
+                        st.logs
+                            .push("[ERROR] Could not find Ghidra. Run 'revisor setup'".to_string());
                         if let Some(t) = st.tasks.iter_mut().find(|t| t.id == id_clone) {
                             t.status = "Error".to_string();
                             t.progress = "Ghidra not found".to_string();
@@ -74,8 +73,9 @@ pub async fn handle_daemon_request(
                 let mut cmd = Command::new(&ghidra_bin);
 
                 if name == "ghidra_import_and_analyze" {
-                    let proj_path =
-                        params_val["project_path"].as_str().unwrap_or("/tmp/ghidra_proj");
+                    let proj_path = params_val["project_path"]
+                        .as_str()
+                        .unwrap_or("/tmp/ghidra_proj");
                     let proj_name = params_val["project_name"].as_str().unwrap_or("test");
                     let bin_path = params_val["binary_path"].as_str().unwrap_or("");
                     let _ = std::fs::create_dir_all(proj_path);
@@ -84,8 +84,9 @@ pub async fn handle_daemon_request(
                         .arg("-import")
                         .arg(bin_path);
                 } else if name == "ghidra_run_script" {
-                    let proj_path =
-                        params_val["project_path"].as_str().unwrap_or("/tmp/ghidra_proj");
+                    let proj_path = params_val["project_path"]
+                        .as_str()
+                        .unwrap_or("/tmp/ghidra_proj");
                     let proj_name = params_val["project_name"].as_str().unwrap_or("test");
                     let script = params_val["script_name"].as_str().unwrap_or("");
                     cmd.arg(proj_path)

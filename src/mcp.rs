@@ -1,15 +1,17 @@
 // MCP (Model Context Protocol) server over stdio.
-// Implements JSON-RPC 2.0 with a comprehensive set of Ghidra tools.
+// Implements JSON-RPC 2.0 as an optional compatibility layer.
 //
-// The MCP server exposes two categories of tools:
-// 1. Bridge tools – query/mutate a running Ghidra bridge TCP server
-// 2. Headless tools – spawn Ghidra headless processes (import, analyze, scripts)
+// The MCP server exposes adapter commands over the same backend model:
+// 1. Bridge tools: query/mutate a running Ghidra bridge TCP server
+// 2. Headless tools: spawn Ghidra headless processes (import, analyze, scripts)
+
+mod tools;
 
 use crate::bridge;
-use crate::types::*;
 use crate::tui::SOCKET_PATH;
+use crate::types::*;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{self, Write};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -43,7 +45,7 @@ pub async fn run_mcp_server() {
                 });
             }
             "tools/list" => {
-                response["result"] = json!({ "tools": build_tool_list() });
+                response["result"] = json!({ "tools": tools::build_tool_list() });
             }
             "tools/call" => {
                 let name = req_val["params"]["name"].as_str().unwrap_or("");
@@ -60,285 +62,6 @@ pub async fn run_mcp_server() {
         println!("{}", serde_json::to_string(&response).unwrap());
         io::stdout().flush().unwrap();
     }
-}
-
-// ─── Tool List ────────────────────────────────────────────────────────────────
-
-/// Build the complete list of MCP tools.
-fn build_tool_list() -> Value {
-    json!([
-        // ── Raw bridge access ──────────────────────────────────────────
-        {
-            "name": "ghidra_ask_bridge",
-            "description": "[Raw] Send a raw JSON command to a running Ghidra Bridge TCP server. Use this for commands not covered by dedicated tools.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "port": { "type": "number", "description": "Bridge TCP port (auto-discovered if omitted)" },
-                    "command": { "type": "string", "description": "Bridge command name (e.g. 'ping', 'list_functions', 'decompile')" },
-                    "args": { "type": "object", "description": "JSON arguments for the command" }
-                },
-                "required": ["command"]
-            }
-        },
-
-        // ── Query tools ────────────────────────────────────────────────
-        {
-            "name": "ghidra_program_info",
-            "description": "[Query] Get metadata about the loaded program (name, language, compiler, image base, counts).",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "port": { "type": "number", "description": "Bridge TCP port (auto-discovered if omitted)" }
-                },
-                "required": []
-            }
-        },
-        {
-            "name": "ghidra_list_functions",
-            "description": "[Query] List all functions in the program with their names and entry-point addresses.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "port": { "type": "number", "description": "Bridge TCP port (auto-discovered if omitted)" }
-                },
-                "required": []
-            }
-        },
-        {
-            "name": "ghidra_decompile",
-            "description": "[Query] Decompile a function by name and return the C pseudocode.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "port": { "type": "number", "description": "Bridge TCP port (auto-discovered if omitted)" },
-                    "function": { "type": "string", "description": "Name of the function to decompile" }
-                },
-                "required": ["function"]
-            }
-        },
-        {
-            "name": "ghidra_function_at",
-            "description": "[Query] Find the function at a specific address.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "port": { "type": "number", "description": "Bridge TCP port (auto-discovered if omitted)" },
-                    "address": { "type": "string", "description": "Hex address (e.g. '0x00401000')" }
-                },
-                "required": ["address"]
-            }
-        },
-        {
-            "name": "ghidra_callers",
-            "description": "[Query] Get all functions that call the specified function.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "port": { "type": "number", "description": "Bridge TCP port (auto-discovered if omitted)" },
-                    "function": { "type": "string", "description": "Name of the function" }
-                },
-                "required": ["function"]
-            }
-        },
-        {
-            "name": "ghidra_callees",
-            "description": "[Query] Get all functions called by the specified function.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "port": { "type": "number", "description": "Bridge TCP port (auto-discovered if omitted)" },
-                    "function": { "type": "string", "description": "Name of the function" }
-                },
-                "required": ["function"]
-            }
-        },
-        {
-            "name": "ghidra_instructions",
-            "description": "[Query] Get the disassembled instructions for a function.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "port": { "type": "number", "description": "Bridge TCP port (auto-discovered if omitted)" },
-                    "function": { "type": "string", "description": "Name of the function" }
-                },
-                "required": ["function"]
-            }
-        },
-        {
-            "name": "ghidra_memory_blocks",
-            "description": "[Query] List all memory blocks (sections) in the program.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "port": { "type": "number", "description": "Bridge TCP port (auto-discovered if omitted)" }
-                },
-                "required": []
-            }
-        },
-        {
-            "name": "ghidra_symbols",
-            "description": "[Query] List or search symbols. Optionally filter by symbol type or search query.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "port": { "type": "number", "description": "Bridge TCP port (auto-discovered if omitted)" },
-                    "symbol_type": { "type": "string", "description": "Optional filter by symbol type (e.g. 'Function', 'Label')" },
-                    "query": { "type": "string", "description": "Optional search pattern to filter symbol names" }
-                },
-                "required": []
-            }
-        },
-        {
-            "name": "ghidra_references_to",
-            "description": "[Query] Get all cross-references TO a given address.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "port": { "type": "number", "description": "Bridge TCP port (auto-discovered if omitted)" },
-                    "address": { "type": "string", "description": "Target address" }
-                },
-                "required": ["address"]
-            }
-        },
-        {
-            "name": "ghidra_references_from",
-            "description": "[Query] Get all cross-references FROM a given address.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "port": { "type": "number", "description": "Bridge TCP port (auto-discovered if omitted)" },
-                    "address": { "type": "string", "description": "Source address" }
-                },
-                "required": ["address"]
-            }
-        },
-        {
-            "name": "ghidra_search_strings",
-            "description": "[Query] Search for strings in the binary. Returns matching addresses and values.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "port": { "type": "number", "description": "Bridge TCP port (auto-discovered if omitted)" },
-                    "query": { "type": "string", "description": "Search string (empty to list all strings)" }
-                },
-                "required": []
-            }
-        },
-        {
-            "name": "ghidra_call_graph",
-            "description": "[Graph] Get the call graph (nodes and edges) for the program.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "port": { "type": "number", "description": "Bridge TCP port (auto-discovered if omitted)" },
-                    "depth": { "type": "number", "description": "Optional maximum depth to traverse" }
-                },
-                "required": []
-            }
-        },
-        {
-            "name": "ghidra_control_flow_graph",
-            "description": "[Graph] Get the control flow graph (basic blocks and edges) for a function.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "port": { "type": "number", "description": "Bridge TCP port (auto-discovered if omitted)" },
-                    "function": { "type": "string", "description": "Name of the function" }
-                },
-                "required": ["function"]
-            }
-        },
-        {
-            "name": "ghidra_imports",
-            "description": "[Query] List all imported symbols/functions.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "port": { "type": "number", "description": "Bridge TCP port (auto-discovered if omitted)" }
-                },
-                "required": []
-            }
-        },
-        {
-            "name": "ghidra_exports",
-            "description": "[Query] List all exported symbols/functions.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "port": { "type": "number", "description": "Bridge TCP port (auto-discovered if omitted)" }
-                },
-                "required": []
-            }
-        },
-        {
-            "name": "ghidra_data_types",
-            "description": "[Query] List all data types known to the program.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "port": { "type": "number", "description": "Bridge TCP port (auto-discovered if omitted)" }
-                },
-                "required": []
-            }
-        },
-
-        // ── Write tools ────────────────────────────────────────────────
-        {
-            "name": "ghidra_rename_function",
-            "description": "[Write] Rename a function in the Ghidra project.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "port": { "type": "number", "description": "Bridge TCP port (auto-discovered if omitted)" },
-                    "function": { "type": "string", "description": "Current function name" },
-                    "new_name": { "type": "string", "description": "New function name" }
-                },
-                "required": ["function", "new_name"]
-            }
-        },
-        {
-            "name": "ghidra_set_comment",
-            "description": "[Write] Set an inline comment at a specific address.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "port": { "type": "number", "description": "Bridge TCP port (auto-discovered if omitted)" },
-                    "address": { "type": "string", "description": "Address to comment" },
-                    "comment": { "type": "string", "description": "Comment text" }
-                },
-                "required": ["address", "comment"]
-            }
-        },
-
-        // ── Headless tools (spawn Ghidra processes) ────────────────────
-        {
-            "name": "ghidra_import_and_analyze",
-            "description": "[Headless] Import a binary into a Ghidra project and auto-analyze it. This spawns a Ghidra headless process.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "binary_path": { "type": "string", "description": "Path to the binary file to import" },
-                    "project_path": { "type": "string", "description": "Ghidra project directory path" },
-                    "project_name": { "type": "string", "description": "Ghidra project name" }
-                },
-                "required": ["binary_path", "project_path", "project_name"]
-            }
-        },
-        {
-            "name": "ghidra_run_script",
-            "description": "[Headless] Run a Ghidra script on an existing project. This spawns a Ghidra headless process.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "project_path": { "type": "string", "description": "Ghidra project directory path" },
-                    "project_name": { "type": "string", "description": "Ghidra project name" },
-                    "script_name": { "type": "string", "description": "Name of the Ghidra script to run" }
-                },
-                "required": ["project_path", "project_name", "script_name"]
-            }
-        }
-    ])
 }
 
 // ─── Tool Call Dispatch ───────────────────────────────────────────────────────
@@ -378,7 +101,13 @@ async fn handle_tool_call(name: &str, args: Value, id: Value) -> Value {
         }
         "ghidra_instructions" => {
             let cmd_args = json!({ "function": args["function"] });
-            send_bridge_command(&args, "instructions_for_function", Some(cmd_args), &mut response).await;
+            send_bridge_command(
+                &args,
+                "instructions_for_function",
+                Some(cmd_args),
+                &mut response,
+            )
+            .await;
         }
         "ghidra_memory_blocks" => {
             send_bridge_command(&args, "memory_blocks", None, &mut response).await;
@@ -468,9 +197,10 @@ async fn handle_tool_call(name: &str, args: Value, id: Value) -> Value {
 fn resolve_port(args: &Value) -> Option<u16> {
     // Explicit port takes priority
     if let Some(port) = args.get("port").and_then(|v| v.as_u64())
-        && port > 0 {
-            return Some(port as u16);
-        }
+        && port > 0
+    {
+        return Some(port as u16);
+    }
     // Fall back to auto-discovery from bridge.pid
     bridge::read_bridge_port()
 }
@@ -487,9 +217,7 @@ async fn handle_bridge_raw(args: &Value, response: &mut Value) {
     let cmd = args["command"].as_str().unwrap_or("");
     let cmd_args = args["args"].clone();
 
-    if let Ok(mut stream) =
-        tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await
-    {
+    if let Ok(mut stream) = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await {
         let payload = json!({ "command": cmd, "args": cmd_args });
         let payload_str = format!("{}\n", serde_json::to_string(&payload).unwrap());
         let _ = stream.write_all(payload_str.as_bytes()).await;
@@ -502,12 +230,10 @@ async fn handle_bridge_raw(args: &Value, response: &mut Value) {
                 "content": [{ "type": "text", "text": line }]
             });
         } else {
-            response["error"] =
-                json!({ "code": -32000, "message": "Failed to read from bridge" });
+            response["error"] = json!({ "code": -32000, "message": "Failed to read from bridge" });
         }
     } else {
-        response["error"] =
-            json!({ "code": -32000, "message": format!("Failed to connect to bridge on port {}", port) });
+        response["error"] = json!({ "code": -32000, "message": format!("Failed to connect to bridge on port {}", port) });
     }
 }
 
@@ -526,9 +252,7 @@ async fn send_bridge_command(
         }
     };
 
-    if let Ok(mut stream) =
-        tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await
-    {
+    if let Ok(mut stream) = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await {
         let payload = BridgeCommand {
             command: command.to_string(),
             args: cmd_args,
@@ -544,8 +268,7 @@ async fn send_bridge_command(
                 "content": [{ "type": "text", "text": line }]
             });
         } else {
-            response["error"] =
-                json!({ "code": -32000, "message": "Failed to read from bridge" });
+            response["error"] = json!({ "code": -32000, "message": "Failed to read from bridge" });
         }
     } else {
         response["error"] = json!({
@@ -573,7 +296,6 @@ async fn delegate_to_daemon(name: &str, args: &Value, response: &mut Value) {
             });
         }
     } else {
-        response["error"] =
-            json!({ "code": -32000, "message": "Failed to connect to daemon" });
+        response["error"] = json!({ "code": -32000, "message": "Failed to connect to daemon" });
     }
 }

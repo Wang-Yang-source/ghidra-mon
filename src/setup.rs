@@ -1,7 +1,7 @@
 // Ghidra setup and discovery utilities.
-// Handles automatic download, extraction, and locating the analyzeHeadless script.
+// Handles installation and discovery for the optional Ghidra backend adapter.
 
-use crate::error::{RevisorError, Result};
+use crate::error::{Result, RevisorError};
 
 use std::io::Write;
 
@@ -9,12 +9,13 @@ use std::io::Write;
 ///
 /// Search order:
 /// 1. `GHIDRA_HEADLESS` environment variable
-/// 2. `~/.revisor/ghidra/support/analyzeHeadless` (auto-installed location)
+/// 2. `~/.revisor/ghidra/support/analyzeHeadless` (managed install location)
 pub fn find_ghidra_headless() -> Option<String> {
     if let Ok(val) = std::env::var("GHIDRA_HEADLESS")
-        && std::path::Path::new(&val).exists() {
-            return Some(val);
-        }
+        && std::path::Path::new(&val).exists()
+    {
+        return Some(val);
+    }
 
     let script_name = if cfg!(windows) {
         "analyzeHeadless.bat"
@@ -45,10 +46,10 @@ pub async fn setup_ghidra() -> Result<()> {
     let ghidra_url = "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_11.2_build/ghidra_11.2_PUBLIC_20240926.zip";
     let zip_path = install_dir.join("ghidra.zip");
 
-    println!("🚀 Downloading Ghidra 11.2 (this might take a while depending on your connection)...");
+    println!("[adapter:ghidra] downloading Ghidra 11.2");
     let response = reqwest::get(ghidra_url).await?;
-    let mut file = std::fs::File::create(&zip_path)
-        .map_err(|e| RevisorError::io("create ghidra.zip", e))?;
+    let mut file =
+        std::fs::File::create(&zip_path).map_err(|e| RevisorError::io("create ghidra.zip", e))?;
 
     use futures_util::StreamExt;
     let mut stream = response.bytes_stream();
@@ -58,7 +59,7 @@ pub async fn setup_ghidra() -> Result<()> {
             .map_err(|e| RevisorError::io("write download chunk", e))?;
     }
 
-    println!("📦 Extracting Ghidra...");
+    println!("[adapter:ghidra] extracting archive");
     let file = std::fs::File::open(&zip_path)
         .map_err(|e| RevisorError::io("open ghidra.zip for extraction", e))?;
     let mut archive = zip::ZipArchive::new(file)?;
@@ -88,7 +89,7 @@ pub async fn setup_ghidra() -> Result<()> {
         }
     }
 
-    println!("✅ Setup Complete! Ghidra is installed to ~/.revisor/ghidra");
+    println!("[adapter:ghidra] installed to ~/.revisor/ghidra");
     let _ = std::fs::remove_file(zip_path);
 
     // Set execution permissions on Linux/macOS

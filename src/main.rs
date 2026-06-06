@@ -1,5 +1,5 @@
-// revisor: Revisoritor & AI MCP Unified Binary
-// Slim CLI entry point – all logic lives in the library modules.
+// Ghidrai terminal reverse engineering toolkit aggregator.
+// Slim CLI entry point; command handling lives in the library modules.
 
 use clap::Parser;
 use revisor::cli::Cli;

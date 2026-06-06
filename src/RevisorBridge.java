@@ -1,5 +1,5 @@
 // RevisorBridge - Comprehensive TCP bridge for Revisor
-// Provides ~25 commands for full Ghidra programmatic access from Rust/AI agents.
+// Provides Ghidra adapter commands for the Ghidrai toolkit workspace.
 //
 // Architecture: Runs as a GhidraScript inside the Ghidra JVM. Opens a TCP
 // ServerSocket and accepts JSON-line commands, returning JSON responses.

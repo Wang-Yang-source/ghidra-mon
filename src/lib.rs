@@ -1,7 +1,7 @@
-// revisor: Revisoritor & AI MCP Unified Binary
+// Ghidrai terminal reverse engineering toolkit aggregator.
 //
-// This is the library entry point, allowing other Rust projects to use
-// revisor as a dependency for programmatic Ghidra access.
+// This is the library entry point for the CLI, TUI workspace, optional
+// compatibility adapters, and pluggable reverse-engineering backends.
 //
 // Example usage:
 // ```rust
@@ -11,12 +11,14 @@
 // let functions = client.list_functions().await?;
 // ```
 
+pub mod adapter;
 pub mod bridge;
+pub mod cli;
 pub mod daemon;
 pub mod error;
+pub mod handlers;
 pub mod mcp;
 pub mod setup;
+pub mod toolkit;
 pub mod tui;
 pub mod types;
-pub mod cli;
-pub mod handlers;
