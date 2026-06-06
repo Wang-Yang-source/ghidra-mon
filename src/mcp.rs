@@ -41,7 +41,7 @@ pub async fn run_mcp_server() {
                 response["result"] = json!({
                     "protocolVersion": "2024-11-05",
                     "capabilities": { "tools": {} },
-                    "serverInfo": { "name": "revisor", "version": "0.5.0" }
+                    "serverInfo": { "name": "ghidrai", "version": "0.6.1" }
                 });
             }
             "tools/list" => {
@@ -210,7 +210,7 @@ async fn handle_bridge_raw(args: &Value, response: &mut Value) {
     let port = match resolve_port(args) {
         Some(p) => p,
         None => {
-            response["error"] = json!({ "code": -32000, "message": "No bridge port specified and no running bridge found. Start a bridge first with 'revisor bridge' or pass a 'port' parameter." });
+            response["error"] = json!({ "code": -32000, "message": "No bridge port specified and no running bridge found. Start a bridge first with 'ghidrai bridge' or pass a 'port' parameter." });
             return;
         }
     };
@@ -247,7 +247,7 @@ async fn send_bridge_command(
     let port = match resolve_port(tool_args) {
         Some(p) => p,
         None => {
-            response["error"] = json!({ "code": -32602, "message": "No bridge port available. Start a bridge with 'revisor bridge' or pass 'port'." });
+            response["error"] = json!({ "code": -32602, "message": "No bridge port available. Start a bridge with 'ghidrai bridge' or pass 'port'." });
             return;
         }
     };

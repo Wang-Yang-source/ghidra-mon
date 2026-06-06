@@ -1,6 +1,6 @@
 // Bridge client for communicating with the Ghidra Java bridge TCP server.
 // Wraps TCP send/receive with typed convenience methods for each command.
-// Also handles bridge port auto-discovery via ~/.revisor/bridge.pid.
+// Also handles bridge port auto-discovery via ~/.ghidrai/bridge.pid.
 
 use crate::error::{Result, RevisorError};
 use crate::types::*;
@@ -20,7 +20,7 @@ fn bridge_pid_path() -> Option<std::path::PathBuf> {
     std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .ok()
-        .map(|h| std::path::PathBuf::from(h).join(".revisor/bridge.pid"))
+        .map(|h| std::path::PathBuf::from(h).join(".ghidrai/bridge.pid"))
 }
 
 /// Write the bridge port to the discovery file for local compatibility adapters.
@@ -333,7 +333,7 @@ pub async fn run_bridge_server(
 ) -> Result<()> {
     let script_dir = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
-        .map(|h| std::path::PathBuf::from(h).join(".revisor"))
+        .map(|h| std::path::PathBuf::from(h).join(".ghidrai"))
         .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
 
     std::fs::create_dir_all(&script_dir).map_err(|e| RevisorError::io("create script dir", e))?;
@@ -373,7 +373,7 @@ pub async fn run_bridge_server(
                     // Write port to discovery file for local compatibility adapters.
                     write_bridge_port(port_num, "bridge");
                     println!("[adapter:ghidra] bridge ready on TCP port {}", port);
-                    println!("[adapter:ghidra] discovery file: ~/.revisor/bridge.pid");
+                    println!("[adapter:ghidra] discovery file: ~/.ghidrai/bridge.pid");
                     println!("[adapter:ghidra] JSON command endpoint: 127.0.0.1:{}", port);
                 }
             } else {

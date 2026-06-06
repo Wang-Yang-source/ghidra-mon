@@ -32,7 +32,7 @@ use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
 use tokio::sync::Mutex;
 
-pub const SOCKET_PATH: &str = "/tmp/revisor.sock";
+pub const SOCKET_PATH: &str = "/tmp/ghidrai.sock";
 
 pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
     enable_raw_mode()?;

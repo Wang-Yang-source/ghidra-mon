@@ -1,5 +1,5 @@
 #!/bin/bash
-# ghidra-mon Integration Test Script
+# Ghidrai integration test script
 # Tests all Bridge query commands against the running bridge
 
 set -e
@@ -30,7 +30,7 @@ test_cmd() {
 }
 
 echo "═══════════════════════════════════════════════════"
-echo "  ghidra-mon Integration Test Suite"
+echo "  Ghidrai Integration Test Suite"
 echo "  Binary: crackme (ELF x86-64)"
 echo "═══════════════════════════════════════════════════"
 echo ""

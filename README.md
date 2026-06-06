@@ -119,19 +119,19 @@ TUI Panels / CLI JSON / Logs
 
 ```bash
 # 启动 TUI，默认入口
-cargo run -- tui
+ghidrai tui
 
 # Ghidra 后端：导入和分析
-cargo run -- analyze ./tests/crackme -p /tmp/ghidra_proj -n crackme
-cargo run -- bridge -p /tmp/ghidra_proj -n crackme
-cargo run -- query list_functions
+ghidrai analyze ./tests/crackme -p /tmp/ghidra_proj -n crackme
+ghidrai bridge -p /tmp/ghidra_proj -n crackme
+ghidrai query list_functions
 
 # 工具合集后端：固件/二进制体检/ROP/Rizin JSON
-cargo run -- toolkit binwalk ./firmware.bin
-cargo run -- toolkit checksec ./tests/crackme
-cargo run -- toolkit rop ./tests/crackme
-cargo run -- toolkit rizin ./tests/crackme --action functions --format json
-cargo run -- toolkit rizin ./tests/crackme --action disasm --query main
+ghidrai toolkit binwalk ./firmware.bin
+ghidrai toolkit checksec ./tests/crackme
+ghidrai toolkit rop ./tests/crackme
+ghidrai toolkit rizin ./tests/crackme --action functions --format json
+ghidrai toolkit rizin ./tests/crackme --action disasm --query main
 ```
 
 ## 近期重构方向

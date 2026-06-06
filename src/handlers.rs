@@ -94,7 +94,7 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
             let bridge_port = port
                 .or_else(bridge::read_bridge_port)
                 .ok_or_else(|| {
-                    eprintln!("[error] no running Ghidra bridge adapter found. Start one with 'revisor bridge' or specify --port.");
+                    eprintln!("[error] no running Ghidra bridge adapter found. Start one with 'ghidrai bridge' or specify --port.");
                     RevisorError::Bridge {
                         message: "No bridge port available".to_string(),
                     }
@@ -236,7 +236,7 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
 pub fn require_ghidra() -> Result<String> {
     setup::find_ghidra_headless().ok_or_else(|| {
         eprintln!(
-            "[error] could not find Ghidra. Run 'revisor setup' first to install the optional Ghidra backend."
+            "[error] could not find Ghidra. Run 'ghidrai setup' first to install the optional Ghidra backend."
         );
         RevisorError::GhidraNotFound
     })

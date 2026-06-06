@@ -48,11 +48,11 @@ pub async fn run_console_command(state: Arc<Mutex<DaemonState>>, cmd: String) {
 
     push_event(
         &state,
-        ToolEvent::status("tui", format!("$ revisor {}", args.join(" "))),
+        ToolEvent::status("tui", format!("$ ghidrai {}", args.join(" "))),
     )
     .await;
 
-    let exe = std::env::current_exe().unwrap_or_else(|_| "revisor".into());
+    let exe = std::env::current_exe().unwrap_or_else(|_| "ghidrai".into());
     let mut command = tokio::process::Command::new(exe);
     command.args(&args);
     command.stdout(Stdio::piped());

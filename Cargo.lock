@@ -1145,6 +1145,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghidrai"
+version = "0.6.1"
+dependencies = [
+ "binwalk",
+ "clap",
+ "crossterm",
+ "futures-util",
+ "goblin",
+ "iced-x86",
+ "memmap2",
+ "ratatui",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "syntect",
+ "thiserror 2.0.18",
+ "tokio",
+ "zip 0.6.6",
+]
+
+[[package]]
 name = "goblin"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2628,27 +2649,6 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams",
  "web-sys",
-]
-
-[[package]]
-name = "revisor"
-version = "0.6.1"
-dependencies = [
- "binwalk",
- "clap",
- "crossterm",
- "futures-util",
- "goblin",
- "iced-x86",
- "memmap2",
- "ratatui",
- "reqwest",
- "serde",
- "serde_json",
- "syntect",
- "thiserror 2.0.18",
- "tokio",
- "zip 0.6.6",
 ]
 
 [[package]]

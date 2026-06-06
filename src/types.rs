@@ -1,4 +1,4 @@
-// Typed data structures for revisor
+// Typed data structures for Ghidrai.
 // All structs that cross module boundaries or represent wire formats live here.
 
 use serde::{Deserialize, Serialize};

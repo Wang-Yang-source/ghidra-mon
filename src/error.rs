@@ -1,9 +1,9 @@
-// Typed error handling for revisor
+// Typed error handling for Ghidrai.
 // Replaces all Box<dyn Error> usage with specific, actionable error variants.
 
 use thiserror::Error;
 
-/// All errors that can occur in revisor operations.
+/// All errors that can occur in Ghidrai operations.
 #[derive(Error, Debug)]
 pub enum RevisorError {
     /// IO errors with context about what operation failed
@@ -27,7 +27,7 @@ pub enum RevisorError {
     Setup(String),
 
     /// Ghidra installation not found
-    #[error("Ghidra not found. Run 'revisor setup' first.")]
+    #[error("Ghidra not found. Run 'ghidrai setup' first.")]
     GhidraNotFound,
 
     /// Network errors (downloads, bridge connections)

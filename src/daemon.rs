@@ -62,7 +62,7 @@ pub async fn handle_daemon_request(
                     None => {
                         let mut st = state_bg.lock().await;
                         st.logs
-                            .push("[ERROR] Could not find Ghidra. Run 'revisor setup'".to_string());
+                            .push("[ERROR] Could not find Ghidra. Run 'ghidrai setup'".to_string());
                         if let Some(t) = st.tasks.iter_mut().find(|t| t.id == id_clone) {
                             t.status = "Error".to_string();
                             t.progress = "Ghidra not found".to_string();

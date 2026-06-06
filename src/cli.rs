@@ -11,13 +11,13 @@ use clap::{Parser, Subcommand};
         2. Ghidra, Rizin, Binwalk, ROPgadget, GDB, Frida, Volatility and similar tools are pluggable engines.\n\
         3. Structured output is preferred; text parsing is isolated inside versioned adapters.\n\n\
         Examples:\n  \
-        revisor tui\n  \
-        revisor toolkit binwalk ./firmware.bin\n  \
-        revisor toolkit checksec ./tests/crackme\n  \
-        revisor toolkit rop ./tests/crackme\n  \
-        revisor analyze /bin/ls -p /tmp/proj -n test_ls\n  \
-        revisor bridge -p /tmp/proj -n test_ls\n  \
-        revisor query decompile main"
+        ghidrai tui\n  \
+        ghidrai toolkit binwalk ./firmware.bin\n  \
+        ghidrai toolkit checksec ./tests/crackme\n  \
+        ghidrai toolkit rop ./tests/crackme\n  \
+        ghidrai analyze /bin/ls -p /tmp/proj -n test_ls\n  \
+        ghidrai bridge -p /tmp/proj -n test_ls\n  \
+        ghidrai query decompile main"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -105,7 +105,7 @@ pub enum Commands {
     },
     /// Query the running Ghidra backend directly from CLI
     #[command(
-        long_about = "Sends a JSON command to the running Ghidra bridge backend and prints the result. This remains useful for debugging the Ghidra adapter while the broader toolkit model is built.\n\nExamples:\n  revisor query decompile main\n  revisor query search_strings password\n  revisor query list_functions"
+        long_about = "Sends a JSON command to the running Ghidra bridge backend and prints the result. This remains useful for debugging the Ghidra adapter while the broader toolkit model is built.\n\nExamples:\n  ghidrai query decompile main\n  ghidrai query search_strings password\n  ghidrai query list_functions"
     )]
     Query {
         /// Bridge command to execute (e.g., 'decompile', 'list_functions')
@@ -120,7 +120,7 @@ pub enum Commands {
             help = "Additional args formatted as key=value"
         )]
         extra_args: Vec<String>,
-        /// Override the bridge TCP port (auto-discovered from /tmp/revisor-bridge.port if not specified)
+        /// Override the bridge TCP port (auto-discovered from ~/.ghidrai/bridge.pid if not specified)
         #[arg(short, long, help = "Bridge TCP port (if auto-discovery fails)")]
         port: Option<u16>,
         /// Pass raw JSON args string instead of key=value (e.g. --json '{"function":"main"}')

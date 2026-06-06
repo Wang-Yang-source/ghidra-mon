@@ -5,7 +5,7 @@
 //
 // Example usage:
 // ```rust
-// use revisor::bridge::BridgeClient;
+// use ghidrai::bridge::BridgeClient;
 //
 // let client = BridgeClient::new(12345);
 // let functions = client.list_functions().await?;

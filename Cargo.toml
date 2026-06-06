@@ -1,10 +1,10 @@
 [package]
-name = "revisor"
+name = "ghidrai"
 version = "0.6.1"
 edition = "2024"
 description = "Open-source terminal reverse engineering TUI toolkit aggregator."
 license = "GPL-3.0-or-later"
-repository = "https://github.com/Wang-Yang-source/revisor"
+repository = "https://github.com/Wang-Yang-source/ghidrai"
 keywords = ["reverse-engineering", "tui", "ghidra", "rizin", "binary-analysis"]
 categories = ["command-line-utilities", "development-tools"]
 
