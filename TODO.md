@@ -104,6 +104,7 @@
   - [x] Firmware（Binwalk 扫描结果面板框架，待接入 adapter 事件流）
   - [ ] Memory（Volatility 内存取证视图）
   - [x] Findings/Logs（独立 Findings 面板 + 严重级过滤侧栏）
+  - [ ] Call Graph（函数调用图面板：提供层次化的调用关系结构树与快速跳转，基于 GhidraMCP `generate_call_graph` 思路，重点实现！）
 - [x] 支持快捷键在函数列表、反汇编、伪代码、引用、日志之间跳转。（`o/d/x/s/r/f/g/t` 切 Tab，`↑↓` 导航，`Enter` 反编译选中函数，`Tab/BackTab` 三区焦点轮换，`v` 切换事件视图）
 - [ ] 每个面板显示数据来源工具、命令行、运行耗时和解析状态。当前 `ToolEvent.adapter` 有来源信息，但面板标题未动态展示工具名和耗时。
 - [x] 结构化视图和原始输出视图可一键切换。（`v` 键切换 `EventView::Structured` / `EventView::Raw`）
@@ -160,6 +161,7 @@
 5. [ ] 接入 ROPgadget，先提供原始输出面板，再逐步结构化 gadget 列表。（注：当前已有纯 Rust ROP adapter，支持 x86/x86-64 ELF/PE 可执行区域扫描和虚拟地址输出，但仍无链构造、ARM 或外部 ROPgadget 集成）
 6. [x] 增加 adapter fixtures 和 golden tests，锁定解析行为。
 7. [x] 在 TUI 中加入"结构化/原始输出"双视图和解析错误提示。
+8. [ ] 重点实现：Function Call Graph（函数调用图）数据提取与 TUI 可视化呈现。
 
 ## 明确不做
 
