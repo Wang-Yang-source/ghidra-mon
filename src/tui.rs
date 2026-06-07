@@ -43,7 +43,7 @@ use crossterm::{
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Alignment, Constraint, Direction, Layout},
+    layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs, Wrap},
@@ -122,6 +122,13 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
 
     // Animation tick counter for subtle pulsing effects
     let mut tick: u64 = 0;
+
+    // Layout areas for mouse hit-testing (updated each frame)
+    let mut tab_area = Rect::default();
+    let mut sidebar_area = Rect::default();
+    let mut main_content_area = Rect::default();
+    let mut log_area = Rect::default();
+    let mut input_area = Rect::default();
 
     {
         let mut st = state.lock().await;
@@ -259,6 +266,11 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                 ])
                 .split(f.area());
 
+            // Save layout areas for mouse hit-testing
+            tab_area = main_chunks[0];
+            log_area = main_chunks[2];
+            input_area = main_chunks[3];
+
             // ── 1. Tab Bar with Gradient ──────────────────────────────────
             let titles: Vec<Line> = AppTab::ALL
                 .iter()
@@ -298,6 +310,9 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                     Constraint::Percentage(75), // Main content
                 ])
                 .split(main_chunks[1]);
+
+            sidebar_area = ide_chunks[0];
+            main_content_area = ide_chunks[1];
 
             let sidebar_focused = active_pane == ActivePane::Sidebar;
             let main_focused = active_pane == ActivePane::MainContent;
@@ -844,104 +859,141 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                     }
                 }
                 Event::Mouse(mouse) => {
-                    if active_pane == ActivePane::Sidebar || mouse.column < 30 {
+                    let pos = Position::new(mouse.column, mouse.row);
+
+                    // ── Click on Tab Bar → switch tab ────────────────
+                    if tab_area.contains(pos) {
                         match mouse.kind {
-                            MouseEventKind::ScrollDown => {
-                                if app_tab == AppTab::Strings {
-                                    let i = match strings_list_state.selected() {
-                                        Some(i) => {
-                                            if i >= strings.len().saturating_sub(1) {
-                                                strings.len().saturating_sub(1)
-                                            } else {
-                                                i + 1
-                                            }
-                                        }
-                                        None => 0,
-                                    };
-                                    strings_list_state.select(Some(i));
-                                } else {
-                                    let i = match list_state.selected() {
-                                        Some(i) => {
-                                            if i >= functions.len().saturating_sub(1) {
-                                                functions.len().saturating_sub(1)
-                                            } else {
-                                                i + 1
-                                            }
-                                        }
-                                        None => 0,
-                                    };
-                                    list_state.select(Some(i));
-                                }
-                            }
-                            MouseEventKind::ScrollUp => {
-                                if app_tab == AppTab::Strings {
-                                    let i = match strings_list_state.selected() {
-                                        Some(i) => {
-                                            if i == 0 {
-                                                0
-                                            } else {
-                                                i - 1
-                                            }
-                                        }
-                                        None => 0,
-                                    };
-                                    strings_list_state.select(Some(i));
-                                } else {
-                                    let i = match list_state.selected() {
-                                        Some(i) => {
-                                            if i == 0 {
-                                                0
-                                            } else {
-                                                i - 1
-                                            }
-                                        }
-                                        None => 0,
-                                    };
-                                    list_state.select(Some(i));
-                                }
-                            }
                             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                                if app_tab == AppTab::Decompiler || app_tab == AppTab::XRefs {
-                                    if let Some(i) = list_state.selected() {
-                                        if let Some(func) = functions.get(i) {
+                                // Compute which tab was clicked based on horizontal position
+                                let inner_x = mouse.column.saturating_sub(tab_area.x + 1); // skip border
+                                let inner_w = tab_area.width.saturating_sub(2).max(1);
+                                let tab_count = AppTab::ALL.len() as u16;
+                                let tab_idx = ((inner_x as u32 * tab_count as u32) / inner_w as u32) as usize;
+                                if let Some(clicked_tab) = AppTab::ALL.get(tab_idx.min(AppTab::ALL.len() - 1)) {
+                                    app_tab = *clicked_tab;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    // ── Click / scroll in Sidebar ────────────────────
+                    else if sidebar_area.contains(pos) {
+                        match mouse.kind {
+                            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                                active_pane = ActivePane::Sidebar;
+                                // Calculate which list item was clicked
+                                let row_in_list = mouse.row.saturating_sub(sidebar_area.y + 1) as usize; // +1 for border
+                                if app_tab == AppTab::Strings {
+                                    let offset = strings_list_state.offset();
+                                    let clicked = offset + row_in_list;
+                                    if clicked < strings.len() {
+                                        strings_list_state.select(Some(clicked));
+                                    }
+                                } else {
+                                    let offset = list_state.offset();
+                                    let clicked = offset + row_in_list;
+                                    if clicked < functions.len() {
+                                        list_state.select(Some(clicked));
+                                        // Auto-trigger decompile + xrefs on click
+                                        if let Some(func) = functions.get(clicked) {
                                             let func_name = func.name.clone();
                                             let tx_dec = tx_decompile.clone();
                                             let port = bridge_port;
-                                            decompiled_code =
-                                                format!("Decompiling {}...", func_name);
+                                            decompiled_code = format!("Decompiling {}...", func_name);
                                             let func_name_dec = func_name.clone();
                                             tokio::spawn(async move {
                                                 if let Some(p) = port {
                                                     let client = BridgeClient::new(p);
-                                                    if let Ok(res) =
-                                                        client.decompile(&func_name_dec).await
-                                                    {
+                                                    if let Ok(res) = client.decompile(&func_name_dec).await {
                                                         if let Some(c_code) = res.c_code {
                                                             let _ = tx_dec.send(c_code).await;
                                                         }
                                                     }
                                                 }
                                             });
-
                                             let tx_x = tx_xrefs.clone();
                                             let func_name2 = func_name.clone();
                                             tokio::spawn(async move {
                                                 if let Some(p) = port {
                                                     let client = BridgeClient::new(p);
-                                                    let callers = client
-                                                        .callers(&func_name2)
-                                                        .await
-                                                        .unwrap_or_default();
-                                                    let callees = client
-                                                        .callees(&func_name2)
-                                                        .await
-                                                        .unwrap_or_default();
+                                                    let callers = client.callers(&func_name2).await.unwrap_or_default();
+                                                    let callees = client.callees(&func_name2).await.unwrap_or_default();
                                                     let _ = tx_x.send((callers, callees)).await;
                                                 }
                                             });
                                         }
                                     }
                                 }
+                            }
+                            MouseEventKind::ScrollDown => {
+                                active_pane = ActivePane::Sidebar;
+                                if app_tab == AppTab::Strings {
+                                    let i = strings_list_state.selected().unwrap_or(0);
+                                    let next = (i + 1).min(strings.len().saturating_sub(1));
+                                    strings_list_state.select(Some(next));
+                                } else {
+                                    let i = list_state.selected().unwrap_or(0);
+                                    let next = (i + 1).min(functions.len().saturating_sub(1));
+                                    list_state.select(Some(next));
+                                }
+                            }
+                            MouseEventKind::ScrollUp => {
+                                active_pane = ActivePane::Sidebar;
+                                if app_tab == AppTab::Strings {
+                                    let i = strings_list_state.selected().unwrap_or(0);
+                                    strings_list_state.select(Some(i.saturating_sub(1)));
+                                } else {
+                                    let i = list_state.selected().unwrap_or(0);
+                                    list_state.select(Some(i.saturating_sub(1)));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    // ── Click / scroll in Main Content ──────────────
+                    else if main_content_area.contains(pos) {
+                        match mouse.kind {
+                            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                                active_pane = ActivePane::MainContent;
+                            }
+                            // Scroll in main content area also navigates sidebar list
+                            // (content panels like Decompiler/Overview are not scrollable yet)
+                            MouseEventKind::ScrollDown => {
+                                if app_tab == AppTab::Strings {
+                                    let i = strings_list_state.selected().unwrap_or(0);
+                                    let next = (i + 1).min(strings.len().saturating_sub(1));
+                                    strings_list_state.select(Some(next));
+                                } else {
+                                    let i = list_state.selected().unwrap_or(0);
+                                    let next = (i + 1).min(functions.len().saturating_sub(1));
+                                    list_state.select(Some(next));
+                                }
+                            }
+                            MouseEventKind::ScrollUp => {
+                                if app_tab == AppTab::Strings {
+                                    let i = strings_list_state.selected().unwrap_or(0);
+                                    strings_list_state.select(Some(i.saturating_sub(1)));
+                                } else {
+                                    let i = list_state.selected().unwrap_or(0);
+                                    list_state.select(Some(i.saturating_sub(1)));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    // ── Click on Input Console → focus it ────────────
+                    else if input_area.contains(pos) {
+                        if mouse.kind == MouseEventKind::Down(crossterm::event::MouseButton::Left) {
+                            active_pane = ActivePane::Input;
+                        }
+                    }
+                    // ── Click on Log Area → toggle event view ────────
+                    else if log_area.contains(pos) {
+                        match mouse.kind {
+                            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                                // Double-purpose: click log area to toggle view
+                                event_view = event_view.toggle();
                             }
                             _ => {}
                         }
