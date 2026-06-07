@@ -4,6 +4,8 @@ Ghidrai = Ghidra + AI + TUI. The project is a terminal-first reverse engineering
 
 ## Design Philosophy
 
+- **AI as a managed hypothesis, not an oracle**: Distinguish strictly between facts, AI hypotheses, and open questions. AI explanations and proposed names must not pollute the truth; they require explicit user confirmation to become accepted facts.
+- **Project Memory over transient sessions**: The core value is accumulating knowledge. Ghidrai must remember renamed functions, confirmed hypotheses, structural discoveries, and bookmarks so analysis is continuous across restarts.
 - First show the forest, then the trees. The default view should be a human-readable binary summary, risk findings, likely language/toolchain, entropy/packer hints, imported capabilities, strings, and decompiled pseudocode. Raw assembly is a drill-down view, not the first thing users see.
 - Human-readable output wins. Prefer decompiled C-like views, structured findings, semantic names, xrefs, call graphs, and explanations over walls of hex or assembly.
 - Commands are the UI. Use a Vim/IDE-style command palette (`:` / `Ctrl+P`) for navigation and actions instead of deep menu trees.
@@ -52,8 +54,14 @@ Do not frame `rz-ghidra` versus LIEF as a single either/or choice. They own diff
 - CFG in terminal should use readable line drawing or braille-style rendering when useful, but clarity beats decoration.
 - Hover/context popups should explain registers, addresses, stack values, constants, imports, and suspicious APIs in place.
 - Variable and register selection should trigger instant data-flow/taint highlighting across upstream and downstream uses.
+- Function Call Graph (CG): A hierarchical, interactive call graph is a high-priority structural view. Users must be able to explore callers and callees rapidly to understand execution paths and business logic.
 - AI is part of the rendering pipeline, not just a chat box. It should propose function names, variable names, risk summaries, behavior explanations, and next actions inline.
 - AI suggestions must be visually distinct and reversible. Example: render `sub_401100(a1, a2)` with a muted suggestion like `init_network_socket(ip, port)` and allow one-key adoption.
+
+## MCP & Tool Extensibility
+
+- **Swiss-Army-Knife Architecture**: Ghidrai integrates multiple backends (Ghidra, Rizin, Binwalk, Volatility) via adapters. 
+- **MCP (Model Context Protocol)**: Expose Ghidrai's structural analysis, mutation capabilities (like renaming functions/variables), and advanced security scanners (e.g., IoT vulnerability checks, emulation, IOC extraction) via an MCP server, turning Ghidrai into an AI-ready reverse engineering infrastructure.
 
 ## Product Direction
 
