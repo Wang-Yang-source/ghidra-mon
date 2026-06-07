@@ -36,11 +36,15 @@
 [0;31m  Boîte à outils TUI d'ingénierie inverse pour terminal[0m
 ```
 
-Ghidrai 是一个全开源、纯命令行的终端逆向 TUI 工具合集。它的目标不是再做一个单点自动化脚本，而是把反汇编、反编译、动态调试、ROP 搜索、固件分析、内存取证和二进制体检统一到一个键盘驱动的终端工作台里。
+GhidrAI is a terminal-based AI-assisted reverse engineering workspace.
 
-Ghidra、Rizin、Binwalk、ROPgadget、GDB、Frida、Volatility、LIEF、Angr、Unicorn 这类工具都应该被视为后端引擎。Ghidrai 本身负责统一工作流、任务生命周期、输出解析、缓存、快捷键和 TUI 呈现。
+It does not try to replace Ghidra at the engine level. Instead, it integrates Ghidra and other reverse engineering engines into a fast, keyboard-first TUI workflow, providing project memory, AI-assisted analysis, structured notes, and exportable reverse engineering reports.
 
-项目长期产品记忆和体验原则记录在 [MEMORY.md](MEMORY.md)。
+GhidrAI 是一个面向 AI 时代的 TUI 逆向工作台。
+
+它不以重写 Ghidra 为第一目标，而是将 Ghidra 及其他逆向工具整合为统一的终端工作流，提供快速分析、反编译结果浏览、函数与字符串索引、AI 辅助理解、项目级记忆和可交付报告导出能力。
+
+项目长期产品记忆和设计哲学记录在 [MEMORY.md](MEMORY.md) 和 [DESIGN.md](DESIGN.md)。
 
 ## 设计哲学
 

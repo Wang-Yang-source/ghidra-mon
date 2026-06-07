@@ -28,6 +28,33 @@
 - [x] 所有工具输出先转换成项目内部统一事件模型，再由 TUI 渲染。TUI runner 通过 `ghidrai toolkit` CLI 子进程消费 ToolEvent JSON，控制台命令也走同一路径。
 - [x] 保留原始 stdout/stderr 日志，便于排障、复现和回放解析测试。
 
+## 执行口径与阶段性路线图 (Execution Roadmap)
+
+**核心原则：不要一开始重写 Ghidra。** 把 Ghidra 作为 upstream engine 纳入 GhidrAI 项目，再将其模块能力拓扑到 TUI。GhidrAI 的核心是将 Ghidra 及其他优秀工具的能力整合为终端里的可组合命令、面板和工作流。
+
+### 目录结构规划
+```text
+ghidrai/
+├── crates/             # Rust 核心库 (TUI, AI, Project Memory)
+├── adapters/           # 工具桥接层 (Ghidra headless scripts, Rizin, Capstone)
+├── third_party/ghidra/ # Ghidra upstream submodule
+└── .ghidrai/           # Project Memory 与缓存
+```
+
+### 阶段性交付路线 (MVP 计划)
+- [ ] **MVP 0：项目纳入与合法合规**
+  - 作为 `third_party/ghidra` submodule 纳入，保留 Apache-2.0 / GPL 等相关 LICENSE 声明。
+- [ ] **MVP 1：TUI 外壳**
+  - 核心界面（三栏 TUI、命令面板、日志面板、快捷键）。
+- [ ] **MVP 2：Rust 快速预分析**
+  - 使用 `goblin` / `memmap2` 等原生库实现秒级识别（ELF/PE/Mach-O、Sections、Symbols、Strings、Entropy），不依赖后台重型分析。
+- [ ] **MVP 3：Ghidra Headless 接入**
+  - 调用 Ghidra Headless 分析器或 Python/Java 脚本导出核心数据（Functions, Strings, Xrefs, Decompile）为 JSON 并渲染到 TUI。
+- [ ] **MVP 4：AI Memory (项目记忆与假设管理)**
+  - 实现用户重命名、注释保存、AI 总结、"Fact vs Hypothesis" 区分及 Markdown 报告导出。
+- [ ] **MVP 5：瑞士军刀插件层**
+  - 接入 Rizin、Radare2、Capstone、GDB、Volatility 等 adapter，补全 TUI 功能。
+
 ## 解析架构
 
 - [x] 设计 `ToolAdapter` trait，统一描述命令构造、能力探测、stdout/stderr 流式解析、退出码处理和错误分类。
