@@ -1,40 +1,7 @@
-<!--
-  GHIDRAI — Terminal Reverse Engineering TUI Toolkit Aggregator
-  View this file with `cat README.md` or `less -R README.md` for rainbow colors.
--->
-[0;31m ######   ##     ## #### ########  ########     ###    #### [0m
-[0;33m##    ##  ##     ##  ##  ##     ## ##     ##   ## ##    ##  [0m
-[0;32m##        ##     ##  ##  ##     ## ##     ##  ##   ##   ##  [0m
-[0;36m##   #### #########  ##  ##     ## ########  ##     ##  ##  [0m
-[0;34m##    ##  ##     ##  ##  ##     ## ##   ##   #########  ##  [0m
-[0;35m##    ##  ##     ##  ##  ##     ## ##    ##  ##     ##  ##  [0m
-[0;31m ######   ##     ## #### ########  ##     ## ##     ## #### [0m
+# GhidrAI
 
-[0;36m  Terminal Reverse Engineering TUI Toolkit Aggregator[0m
-[0;33m  终端逆向工程 TUI 工具合集 · 开源 · 键盘驱动 · 后端可替换[0m
-[0;32m  ターミナルリバースエンジニアリング TUI ツールキット[0m
-[0;34m  터미널 리버스 엔지니어링 TUI 툴킷 · 오픈소스[0m
-[0;35m  Терминальный TUI инструментарий для реверс-инжиниринга[0m
-[0;31m  Boîte à outils TUI d'ingénierie inverse pour terminal[0m
-
----
-
-```ansi
-[0;31m ######   ##     ## #### ########  ########     ###    #### [0m
-[0;33m##    ##  ##     ##  ##  ##     ## ##     ##   ## ##    ##  [0m
-[0;32m##        ##     ##  ##  ##     ## ##     ##  ##   ##   ##  [0m
-[0;36m##   #### #########  ##  ##     ## ########  ##     ##  ##  [0m
-[0;34m##    ##  ##     ##  ##  ##     ## ##   ##   #########  ##  [0m
-[0;35m##    ##  ##     ##  ##  ##     ## ##    ##  ##     ##  ##  [0m
-[0;31m ######   ##     ## #### ########  ##     ## ##     ## #### [0m
-
-[0;36m  Terminal Reverse Engineering TUI Toolkit Aggregator[0m
-[0;33m  终端逆向工程 TUI 工具合集 · 开源 · 键盘驱动 · 后端可替换[0m
-[0;32m  ターミナルリバースエンジニアリング TUI ツールキット[0m
-[0;34m  터미널 리버스 엔지니어링 TUI 툴킷 · 오픈소스[0m
-[0;35m  Терминальный TUI инструментарий для реверс-инжиниринга[0m
-[0;31m  Boîte à outils TUI d'ingénierie inverse pour terminal[0m
-```
+**Terminal Reverse Engineering TUI Toolkit Aggregator**
+*终端逆向工程 TUI 工具合集 · 开源 · 键盘驱动 · 后端可替换*
 
 GhidrAI is a terminal-based AI-assisted reverse engineering workspace.
 
