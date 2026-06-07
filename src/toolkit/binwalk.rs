@@ -4,6 +4,11 @@ use crate::error::{Result, RevisorError};
 use crate::toolkit::native_rust_capability;
 use std::fs;
 
+/// Firmware signature scanner backed by the built-in [`binwalk`] crate.
+///
+/// Scans a binary for magic byte signatures (filesystem headers, compression
+/// formats, bootloaders, etc.) and reports each hit as a structured
+/// [`ToolEventKind::FirmwareEntry`] event.
 pub struct BinwalkAdapter;
 
 impl ToolAdapter for BinwalkAdapter {
@@ -39,6 +44,10 @@ impl ToolAdapter for BinwalkAdapter {
     }
 }
 
+/// Scan a file for firmware signatures using the built-in binwalk engine.
+///
+/// Returns a list of [`FirmwareEntry`] items, each describing a detected
+/// magic-byte signature and its file offset.
 pub fn scan_entries(file_path: &str) -> Result<Vec<FirmwareEntry>> {
     let file_data = fs::read(file_path).map_err(|e| RevisorError::io("read binwalk target", e))?;
     let binwalker = binwalk::Binwalk::new();
@@ -53,6 +62,10 @@ pub fn scan_entries(file_path: &str) -> Result<Vec<FirmwareEntry>> {
         .collect())
 }
 
+/// Scan a file and return human-readable signature strings.
+///
+/// Convenience wrapper around [`scan_entries`] that formats each hit as
+/// `"0x<offset>: <description>"`.
 pub fn scan_signatures(
     file_path: &str,
 ) -> std::result::Result<Vec<String>, Box<dyn std::error::Error>> {

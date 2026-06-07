@@ -143,6 +143,7 @@ pub enum Commands {
 #[derive(Subcommand)]
 pub enum ToolkitCommands {
     /// Scan firmware signatures and extracted structures
+    #[cfg(feature = "binwalk")]
     Binwalk {
         /// Binary to scan
         #[arg(help = "Path to the binary file")]

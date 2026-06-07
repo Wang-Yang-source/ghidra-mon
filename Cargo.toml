@@ -1,6 +1,6 @@
 [package]
 name = "ghidrai"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2024"
 description = "Open-source terminal reverse engineering TUI toolkit aggregator."
 license = "GPL-3.0-or-later"
@@ -23,4 +23,12 @@ syntect = "5.3.0"
 goblin = "0.10.7"
 iced-x86 = "1.21.0"
 memmap2 = "0.9.10"
-binwalk = { version = "3.1.0", path = "third_party/binwalk" }
+binwalk = { version = "3.1.0", path = "third_party/binwalk", optional = true }
+
+[features]
+default = ["binwalk"]
+binwalk = ["dep:binwalk"]
+
+[package.metadata.docs.rs]
+# docs.rs cannot resolve the vendored path dependency; build without it.
+no-default-features = true

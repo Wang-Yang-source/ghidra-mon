@@ -1,5 +1,25 @@
-// Ghidrai terminal workspace.
-// The TUI presents a unified toolkit surface over pluggable backends.
+//! Terminal UI workspace built on [ratatui] and [crossterm].
+//!
+//! The TUI presents a unified surface over all pluggable backends:
+//! function lists, decompiled C with syntax highlighting, cross-references,
+//! string tables, and a command console with fish-style autocompletion.
+//!
+//! ## Theme
+//!
+//! Fire-gradient palette (orange-yellow + fire-red) with per-character
+//! gradient rendering.  See [`theme`] for the colour engine.
+//!
+//! ## Key bindings
+//!
+//! | Key | Action |
+//! |-----|--------|
+//! | `Tab` | Cycle focus: Input → Sidebar → Main Content |
+//! | `o/d/x/s/r/f/g/t` | Switch tabs |
+//! | `v` | Toggle event log view (structured / raw) |
+//! | `Enter` (sidebar) | Decompile / inspect selected item |
+//! | `↑` / `↓` | Navigate lists or command history |
+//! | `→` | Accept autocompletion suggestion |
+//! | `Ctrl+C` / `Ctrl+Q` | Quit |
 
 mod binary_info;
 mod commands;
@@ -7,6 +27,7 @@ mod events;
 mod highlight;
 mod model;
 mod runner;
+mod theme;
 
 use crate::adapter::schema::ToolEvent;
 use crate::bridge::{BridgeClient, read_bridge_port};
@@ -22,8 +43,8 @@ use crossterm::{
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
-    style::{Color, Modifier, Style},
+    layout::{Alignment, Constraint, Direction, Layout},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs, Wrap},
 };
@@ -34,6 +55,29 @@ use tokio::sync::Mutex;
 
 pub const SOCKET_PATH: &str = "/tmp/ghidrai.sock";
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Build a Block with gradient-coloured title and themed border.
+fn themed_block(title: &str, focused: bool) -> Block<'_> {
+    let border_style = if focused {
+        theme::border_focused()
+    } else {
+        theme::border_dim()
+    };
+    Block::default()
+        .title(Span::styled(
+            format!(" {} ", title),
+            theme::title(),
+        ))
+        .borders(Borders::ALL)
+        .border_style(border_style)
+}
+
+/// Shorthand for the highlight symbol used in all lists.
+const HIGHLIGHT_SYMBOL: &str = "▸ ";
+
+// ─── Main Entry ───────────────────────────────────────────────────────────────
+
 pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -43,7 +87,7 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
 
     let mut input = String::new();
     let mut active_pane = ActivePane::Input;
-    let mut app_tab = AppTab::Decompiler;
+    let mut app_tab = AppTab::Overview;
     let mut event_view = EventView::Structured;
 
     // Command History & Suggestions
@@ -66,12 +110,18 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
     let mut callers: Vec<FunctionInfo> = Vec::new();
     let mut callees: Vec<FunctionInfo> = Vec::new();
 
+    // Overview data (populated by `info <bin>`)
+    let mut overview_lines: Vec<String> = Vec::new();
+
     // Syntect setup
     let ps = SyntaxSet::load_defaults_newlines();
     let ts = ThemeSet::load_defaults();
 
     // Check if bridge is available initially
     let mut bridge_port = read_bridge_port();
+
+    // Animation tick counter for subtle pulsing effects
+    let mut tick: u64 = 0;
 
     {
         let mut st = state.lock().await;
@@ -86,7 +136,7 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
             )));
             st.logs.push(events::event_line(ToolEvent::status(
                 "tui",
-                "keys: TAB focus | d decompile | x xrefs | s strings | t toolkit | v event view | Ctrl+C quit",
+                "keys: TAB focus | o overview | d decompile | x xrefs | s strings | r rop | f firmware | g findings | t toolkit | v event view | Ctrl+C quit",
             )));
         } else {
             st.logs.push(events::event_line(ToolEvent::status(
@@ -124,6 +174,8 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
     let mut last_bridge_check = std::time::Instant::now();
 
     loop {
+        tick = tick.wrapping_add(1);
+
         // Dynamic Bridge Detection
         if bridge_port.is_none() && last_bridge_check.elapsed() > Duration::from_secs(1) {
             last_bridge_check = std::time::Instant::now();
@@ -184,39 +236,61 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
 
         let st = state.lock().await.clone();
 
+        // Collect overview data from recent info logs
+        if app_tab == AppTab::Overview && overview_lines.is_empty() {
+            for log in &st.logs {
+                if let Ok(ev) = serde_json::from_str::<ToolEvent>(log) {
+                    if ev.adapter == "local" && ev.message.contains(':') {
+                        overview_lines.push(ev.message.clone());
+                    }
+                }
+            }
+        }
+
         terminal.draw(|f| {
             let main_chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .margin(1)
+                .margin(0)
                 .constraints([
                     Constraint::Length(3),      // Tabs
-                    Constraint::Percentage(60), // IDE area
-                    Constraint::Percentage(25), // Logs area
-                    Constraint::Length(3),      // Input area
+                    Constraint::Min(10),        // IDE area (flexible)
+                    Constraint::Length(8),       // Logs area
+                    Constraint::Length(3),       // Input area
                 ])
                 .split(f.area());
 
-            // 1. Tabs
-            let titles = vec![
-                Line::from(" [d] Decompile "),
-                Line::from(" [x] Xrefs "),
-                Line::from(" [s] Strings "),
-                Line::from(" [t] Toolkit "),
-            ];
-            let tab_index = match app_tab {
-                AppTab::Decompiler => 0,
-                AppTab::XRefs => 1,
-                AppTab::Strings => 2,
-                AppTab::Toolkit => 3,
-            };
+            // ── 1. Tab Bar with Gradient ──────────────────────────────────
+            let titles: Vec<Line> = AppTab::ALL
+                .iter()
+                .enumerate()
+                .map(|(i, tab)| {
+                    let t = i as f32 / (AppTab::ALL.len() - 1).max(1) as f32;
+                    let color = theme::gradient(theme::FIRE_GRADIENT, t);
+                    Line::from(Span::styled(
+                        tab.label(),
+                        Style::default().fg(color),
+                    ))
+                })
+                .collect();
+
+            let tab_block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme::border_dim())
+                .title(Span::styled(
+                    " ◆ GHIDRAI ",
+                    Style::default()
+                        .fg(theme::AMBER)
+                        .add_modifier(Modifier::BOLD),
+                ));
             let tabs = Tabs::new(titles)
-                .block(Block::default().borders(Borders::ALL).title(" Workspace "))
-                .select(tab_index)
-                .style(Style::default().fg(Color::DarkGray))
-                .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+                .block(tab_block)
+                .select(app_tab.index())
+                .style(theme::tab_inactive())
+                .highlight_style(theme::tab_active())
+                .divider(Span::styled("│", Style::default().fg(theme::SMOKE)));
             f.render_widget(tabs, main_chunks[0]);
 
-            // 2. IDE Area
+            // ── 2. IDE Area ──────────────────────────────────────────────
             let ide_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([
@@ -225,119 +299,249 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                 ])
                 .split(main_chunks[1]);
 
-            // Sidebar rendering (Functions or Strings depending on tab)
-            let sidebar_border = if active_pane == ActivePane::Sidebar {
-                Color::Yellow
-            } else {
-                Color::DarkGray
-            };
+            let sidebar_focused = active_pane == ActivePane::Sidebar;
+            let main_focused = active_pane == ActivePane::MainContent;
 
-            if app_tab == AppTab::Strings {
-                let str_items: Vec<ListItem> = strings
-                    .iter()
-                    .map(|s| ListItem::new(format!("{} | {}", s.address, s.value)))
-                    .collect();
-                let str_list = List::new(str_items)
-                    .block(Block::default().title(" Strings ").borders(Borders::ALL).border_style(Style::default().fg(sidebar_border)))
-                    .highlight_style(Style::default().bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD))
-                    .highlight_symbol("> ");
-                f.render_stateful_widget(str_list, ide_chunks[0], &mut strings_list_state);
-
-                let detail = if let Some(i) = strings_list_state.selected() {
-                    strings
-                        .get(i)
-                        .map(|s| {
-                            format!(
-                                "Adapter: Ghidra\nAddress: {}\nValue:\n{}",
-                                s.address, s.value
-                            )
-                        })
-                        .unwrap_or_else(|| "No string selected.".to_string())
-                } else {
-                    "No strings loaded. Start a backend adapter or run a toolkit command from the console.".to_string()
-                };
-                let detail_block = Paragraph::new(detail)
-                    .block(Block::default().title(" String Detail ").borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)))
-                    .wrap(Wrap { trim: false });
-                f.render_widget(detail_block, ide_chunks[1]);
-            } else if app_tab == AppTab::Toolkit {
-                let tools = [
-                    "info <bin>              binary format and section summary",
-                    "toolkit binwalk <bin>   firmware signatures and embedded structures",
-                    "toolkit checksec <bin>  ELF hardening features",
-                    "toolkit rop <bin>       ROP gadget discovery",
-                    "toolkit rizin <bin>     Rizin JSON static analysis",
-                    "analyze <bin> ...       import into the Ghidra backend adapter",
-                    "bridge ...              start the Ghidra backend adapter",
-                    "query <cmd> ...         inspect a running backend adapter",
-                ];
-                let tool_items: Vec<ListItem> = tools.iter().map(|tool| ListItem::new(*tool)).collect();
-                let tool_list = List::new(tool_items)
-                    .block(Block::default().title(" Tool Adapters ").borders(Borders::ALL).border_style(Style::default().fg(sidebar_border)))
-                    .highlight_symbol("> ");
-                f.render_widget(tool_list, ide_chunks[0]);
-
-                let detail = "Ghidrai treats every engine as an adapter.\n\nThe TUI shows structured events and keeps raw stdout/stderr in the event log. Ghidra and Rizin are static-analysis backends; Binwalk, checksec and ROP adapters are toolkit engines available from the command console.";
-                let detail_block = Paragraph::new(detail)
-                    .block(Block::default().title(" Adapter Model ").borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)))
-                    .wrap(Wrap { trim: false });
-                f.render_widget(detail_block, ide_chunks[1]);
-            } else {
-                let func_items: Vec<ListItem> = functions
-                    .iter()
-                    .map(|func| ListItem::new(format!("{} @ {}", func.name, func.address)))
-                    .collect();
-                let func_list = List::new(func_items)
-                    .block(Block::default().title(" Functions ").borders(Borders::ALL).border_style(Style::default().fg(sidebar_border)))
-                    .highlight_style(Style::default().bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD))
-                    .highlight_symbol("> ");
-                f.render_stateful_widget(func_list, ide_chunks[0], &mut list_state);
-
-                // Main content rendering (Decompiler or XRefs)
-                if app_tab == AppTab::Decompiler {
+            // ── Render per-tab content ────────────────────────────────────
+            match app_tab {
+                AppTab::Overview => {
+                    render_overview(f, ide_chunks[0], ide_chunks[1], sidebar_focused, main_focused, &functions, &mut list_state, &overview_lines, tick);
+                }
+                AppTab::Decompiler => {
+                    render_sidebar_functions(f, ide_chunks[0], sidebar_focused, &functions, &mut list_state);
                     let highlighted_lines = highlight::c_code(&decompiled_code, &ps, &ts);
                     let code_block = Paragraph::new(highlighted_lines)
-                        .block(Block::default().title(" Decompiled C ").borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)))
+                        .block(themed_block("Decompiled C", main_focused))
                         .wrap(Wrap { trim: false });
                     f.render_widget(code_block, ide_chunks[1]);
-                } else if app_tab == AppTab::XRefs {
+                }
+                AppTab::XRefs => {
+                    render_sidebar_functions(f, ide_chunks[0], sidebar_focused, &functions, &mut list_state);
+
                     let xrefs_chunks = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                         .split(ide_chunks[1]);
 
-                    let callers_items: Vec<ListItem> = callers.iter().map(|f| ListItem::new(format!("{} @ {}", f.name, f.address))).collect();
+                    let callers_items: Vec<ListItem> = callers
+                        .iter()
+                        .map(|func| {
+                            ListItem::new(Line::from(vec![
+                                Span::styled("← ", theme::xref_caller()),
+                                Span::styled(&func.name, Style::default().fg(theme::BONE)),
+                                Span::styled(format!(" @ {}", func.address), theme::address()),
+                            ]))
+                        })
+                        .collect();
                     let callers_list = List::new(callers_items)
-                        .block(Block::default().title(" Callers ").borders(Borders::ALL).border_style(Style::default().fg(Color::LightMagenta)));
+                        .block(themed_block("Callers (incoming)", main_focused))
+                        .highlight_style(theme::list_highlight())
+                        .highlight_symbol(HIGHLIGHT_SYMBOL);
                     f.render_widget(callers_list, xrefs_chunks[0]);
 
-                    let callees_items: Vec<ListItem> = callees.iter().map(|f| ListItem::new(format!("{} @ {}", f.name, f.address))).collect();
+                    let callees_items: Vec<ListItem> = callees
+                        .iter()
+                        .map(|func| {
+                            ListItem::new(Line::from(vec![
+                                Span::styled("→ ", theme::xref_callee()),
+                                Span::styled(&func.name, Style::default().fg(theme::BONE)),
+                                Span::styled(format!(" @ {}", func.address), theme::address()),
+                            ]))
+                        })
+                        .collect();
                     let callees_list = List::new(callees_items)
-                        .block(Block::default().title(" Callees ").borders(Borders::ALL).border_style(Style::default().fg(Color::LightBlue)));
+                        .block(themed_block("Callees (outgoing)", main_focused))
+                        .highlight_style(theme::list_highlight())
+                        .highlight_symbol(HIGHLIGHT_SYMBOL);
                     f.render_widget(callees_list, xrefs_chunks[1]);
+                }
+                AppTab::Strings => {
+                    let str_items: Vec<ListItem> = strings
+                        .iter()
+                        .map(|s| {
+                            ListItem::new(Line::from(vec![
+                                Span::styled(&s.address, theme::address()),
+                                Span::styled(" │ ", Style::default().fg(theme::SMOKE)),
+                                Span::styled(&s.value, Style::default().fg(theme::SAND)),
+                            ]))
+                        })
+                        .collect();
+                    let str_list = List::new(str_items)
+                        .block(themed_block("Strings", sidebar_focused))
+                        .highlight_style(theme::list_highlight())
+                        .highlight_symbol(HIGHLIGHT_SYMBOL);
+                    f.render_stateful_widget(str_list, ide_chunks[0], &mut strings_list_state);
+
+                    let detail = if let Some(i) = strings_list_state.selected() {
+                        strings
+                            .get(i)
+                            .map(|s| {
+                                format!(
+                                    "Address:  {}\nEncoding: UTF-8\nLength:   {} bytes\n\n{}",
+                                    s.address,
+                                    s.value.len(),
+                                    s.value
+                                )
+                            })
+                            .unwrap_or_else(|| "No string selected.".to_string())
+                    } else {
+                        "No strings loaded.\n\nRun a backend adapter or use:\n  toolkit rizin <bin>\n  query search_strings <pattern>".to_string()
+                    };
+                    let detail_block = Paragraph::new(detail)
+                        .block(themed_block("String Detail", main_focused))
+                        .style(Style::default().fg(theme::SAND))
+                        .wrap(Wrap { trim: false });
+                    f.render_widget(detail_block, ide_chunks[1]);
+                }
+                AppTab::ROP => {
+                    render_sidebar_functions(f, ide_chunks[0], sidebar_focused, &functions, &mut list_state);
+                    render_placeholder(f, ide_chunks[1], main_focused,
+                        "ROP Gadgets",
+                        &[
+                            "ROP gadget discovery powered by iced-x86.",
+                            "",
+                            "Run from the console:",
+                            "  toolkit rop <binary>",
+                            "",
+                            "Gadgets will appear here once a scan completes.",
+                            "Current adapter: pure Rust (64-bit x86).",
+                        ],
+                    );
+                }
+                AppTab::Firmware => {
+                    let fw_sidebar_items: Vec<ListItem> = vec![
+                        ListItem::new(Line::from(vec![
+                            Span::styled("binwalk", Style::default().fg(theme::ORANGE).add_modifier(Modifier::BOLD)),
+                            Span::styled("  firmware scanner", Style::default().fg(theme::ASH)),
+                        ])),
+                    ];
+                    let fw_list = List::new(fw_sidebar_items)
+                        .block(themed_block("Engines", sidebar_focused))
+                        .highlight_style(theme::list_highlight())
+                        .highlight_symbol(HIGHLIGHT_SYMBOL);
+                    f.render_widget(fw_list, ide_chunks[0]);
+                    render_placeholder(f, ide_chunks[1], main_focused,
+                        "Firmware Scan",
+                        &[
+                            "Binwalk firmware analysis results.",
+                            "",
+                            "Run from the console:",
+                            "  toolkit binwalk <firmware.bin>",
+                            "",
+                            "Detected signatures, embedded filesystems,",
+                            "and entropy analysis will appear here.",
+                        ],
+                    );
+                }
+                AppTab::Findings => {
+                    render_placeholder(f, ide_chunks[0], sidebar_focused,
+                        "Severity",
+                        &["[Critical]", "[High]", "[Medium]", "[Low]", "[Info]"],
+                    );
+                    render_placeholder(f, ide_chunks[1], main_focused,
+                        "Findings / Audit Log",
+                        &[
+                            "Security findings from all adapters.",
+                            "",
+                            "checksec, CWE_checker, and custom rules",
+                            "will populate findings here.",
+                            "",
+                            "Run: toolkit checksec <binary>",
+                        ],
+                    );
+                }
+                AppTab::Toolkit => {
+                    let tools = [
+                        ("info <bin>",              "binary format and section summary"),
+                        ("toolkit binwalk <bin>",    "firmware signatures and embedded structures"),
+                        ("toolkit checksec <bin>",   "ELF hardening features"),
+                        ("toolkit rop <bin>",        "ROP gadget discovery"),
+                        ("toolkit rizin <bin>",      "Rizin JSON static analysis"),
+                        ("analyze <bin> ...",        "import into the Ghidra backend adapter"),
+                        ("bridge ...",               "start the Ghidra backend adapter"),
+                        ("query <cmd> ...",          "inspect a running backend adapter"),
+                    ];
+                    let tool_items: Vec<ListItem> = tools.iter().map(|(cmd, desc)| {
+                        ListItem::new(Line::from(vec![
+                            Span::styled(*cmd, Style::default().fg(theme::AMBER).add_modifier(Modifier::BOLD)),
+                            Span::styled(format!("  {}", desc), Style::default().fg(theme::ASH)),
+                        ]))
+                    }).collect();
+                    let tool_list = List::new(tool_items)
+                        .block(themed_block("Tool Adapters", sidebar_focused))
+                        .highlight_symbol(HIGHLIGHT_SYMBOL);
+                    f.render_widget(tool_list, ide_chunks[0]);
+
+                    let detail_lines: Vec<Line> = vec![
+                        Line::from(""),
+                        theme::gradient_text("  Ghidrai Adapter Architecture", theme::FIRE_GRADIENT, true),
+                        Line::from(""),
+                        Line::from(Span::styled(
+                            "  Every reverse-engineering engine is an adapter.",
+                            Style::default().fg(theme::SAND),
+                        )),
+                        Line::from(""),
+                        Line::from(vec![
+                            Span::styled("  Structured  ", Style::default().fg(theme::AMBER).add_modifier(Modifier::BOLD)),
+                            Span::styled("JSON events from Rizin, Ghidra, Binwalk", Style::default().fg(theme::SAND)),
+                        ]),
+                        Line::from(vec![
+                            Span::styled("  Native      ", Style::default().fg(theme::ORANGE).add_modifier(Modifier::BOLD)),
+                            Span::styled("Pure Rust: checksec, ROP (iced-x86), binary info", Style::default().fg(theme::SAND)),
+                        ]),
+                        Line::from(vec![
+                            Span::styled("  Raw         ", Style::default().fg(theme::FIRE).add_modifier(Modifier::BOLD)),
+                            Span::styled("Fallback stdout/stderr capture with adapter isolation", Style::default().fg(theme::SAND)),
+                        ]),
+                        Line::from(""),
+                        theme::gradient_rule(60, theme::EMBER, theme::SOLAR),
+                        Line::from(""),
+                        Line::from(Span::styled(
+                            "  Press [v] to toggle structured / raw event view.",
+                            Style::default().fg(theme::ASH),
+                        )),
+                    ];
+                    let detail_block = Paragraph::new(detail_lines)
+                        .block(themed_block("Adapter Model", main_focused))
+                        .wrap(Wrap { trim: false });
+                    f.render_widget(detail_block, ide_chunks[1]);
                 }
             }
 
-            // 3. Logs Area
+            // ── 3. Event Log ─────────────────────────────────────────────
             let log_items: Vec<ListItem> = events::visible_logs(&st.logs, event_view, 15)
                 .into_iter()
-                .map(ListItem::new)
+                .map(|line| {
+                    let style = if line.contains("Error") || line.contains("[error]") {
+                        theme::log_error()
+                    } else {
+                        theme::log_status()
+                    };
+                    ListItem::new(Span::styled(line, style))
+                })
                 .collect();
+
+            let log_title = event_view.title();
             let logs_block = List::new(log_items).block(
-                Block::default().title(event_view.title()).borders(Borders::ALL).border_style(Style::default().fg(Color::DarkGray)),
+                Block::default()
+                    .title(Span::styled(log_title, theme::title()))
+                    .borders(Borders::ALL)
+                    .border_style(theme::border_dim()),
             );
             f.render_widget(logs_block, main_chunks[2]);
 
-            // Compute Ghost Text (Fish style)
+            // ── 4. Command Console ───────────────────────────────────────
             let ghost_text = if active_pane == ActivePane::Input {
                 commands::ghost_text(&input, &command_history, &suggestions)
             } else {
                 String::new()
             };
 
-            let input_border = if active_pane == ActivePane::Input { Color::Green } else { Color::DarkGray };
-            let title = if !suggestions.is_empty() && active_pane == ActivePane::Input {
-                let mut sugg_str = String::from(" Command Console | Suggestions: ");
+            let console_focused = active_pane == ActivePane::Input;
+            let console_border = if console_focused { theme::AMBER } else { theme::SMOKE };
+
+            let title = if !suggestions.is_empty() && console_focused {
+                let mut sugg_str = String::from(" Console │ ");
                 for (i, s) in suggestions.iter().enumerate() {
                     if i == suggestion_index {
                         sugg_str.push_str(&format!("[{}] ", s));
@@ -347,18 +551,26 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                 }
                 sugg_str
             } else {
-                String::from(" Command Console | Right arrow accepts completion ")
+                String::from(" Console │ → accepts completion ")
             };
 
+            // Pulse the cursor color slightly
+            let cursor_phase = ((tick % 20) as f32) / 20.0;
+            let cursor_color = theme::lerp_color(theme::ORANGE, theme::SOLAR, cursor_phase);
+
             let line = Line::from(vec![
-                Span::styled("> ", Style::default().fg(Color::Yellow)),
-                Span::styled(input.clone(), Style::default().fg(Color::Yellow)),
-                Span::styled(ghost_text.clone(), Style::default().fg(Color::DarkGray)),
-                Span::styled("_", Style::default().fg(Color::Yellow)),
+                Span::styled("❯ ", theme::prompt()),
+                Span::styled(input.clone(), theme::input_text()),
+                Span::styled(ghost_text.clone(), theme::ghost()),
+                Span::styled("█", Style::default().fg(cursor_color)),
             ]);
 
-            let input_block = Paragraph::new(line)
-                .block(Block::default().title(title).borders(Borders::ALL).border_style(Style::default().fg(input_border)));
+            let input_block = Paragraph::new(line).block(
+                Block::default()
+                    .title(Span::styled(title, Style::default().fg(theme::MUTED_GOLD)))
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(console_border)),
+            );
             f.render_widget(input_block, main_chunks[3]);
         })?;
 
@@ -381,13 +593,20 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                             break;
                         }
                         KeyCode::Tab => {
-                            active_pane = if active_pane == ActivePane::Input {
-                                ActivePane::Sidebar
-                            } else {
-                                ActivePane::Input
+                            active_pane = match active_pane {
+                                ActivePane::Input => ActivePane::Sidebar,
+                                ActivePane::Sidebar => ActivePane::MainContent,
+                                ActivePane::MainContent => ActivePane::Input,
                             };
                         }
-                        KeyCode::Char('v') => {
+                        KeyCode::BackTab => {
+                            active_pane = match active_pane {
+                                ActivePane::Input => ActivePane::MainContent,
+                                ActivePane::Sidebar => ActivePane::Input,
+                                ActivePane::MainContent => ActivePane::Sidebar,
+                            };
+                        }
+                        KeyCode::Char('v') if active_pane != ActivePane::Input => {
                             event_view = event_view.toggle();
                             let mut st = state.lock().await;
                             st.logs.push(events::event_line(ToolEvent::status(
@@ -396,16 +615,19 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                             )));
                         }
 
-                        // Global hotkeys to switch tabs
-                        KeyCode::Char('d') if active_pane == ActivePane::Sidebar => {
+                        // ── Tab switching hotkeys ────────────────────
+                        KeyCode::Char('o') if active_pane != ActivePane::Input => {
+                            app_tab = AppTab::Overview;
+                        }
+                        KeyCode::Char('d') if active_pane != ActivePane::Input => {
                             app_tab = AppTab::Decompiler;
                         }
-                        KeyCode::Char('x') if active_pane == ActivePane::Sidebar => {
+                        KeyCode::Char('x') if active_pane != ActivePane::Input => {
                             app_tab = AppTab::XRefs;
                             // Trigger xrefs fetch for current selected function
                             if let Some(i) = list_state.selected() {
-                                if let Some(f) = functions.get(i) {
-                                    let func_name = f.name.clone();
+                                if let Some(func) = functions.get(i) {
+                                    let func_name = func.name.clone();
                                     let tx = tx_xrefs.clone();
                                     let port = bridge_port;
                                     tokio::spawn(async move {
@@ -425,14 +647,23 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                                 }
                             }
                         }
-                        KeyCode::Char('s') if active_pane == ActivePane::Sidebar => {
+                        KeyCode::Char('s') if active_pane != ActivePane::Input => {
                             app_tab = AppTab::Strings;
                         }
-                        KeyCode::Char('t') if active_pane == ActivePane::Sidebar => {
+                        KeyCode::Char('r') if active_pane != ActivePane::Input => {
+                            app_tab = AppTab::ROP;
+                        }
+                        KeyCode::Char('f') if active_pane != ActivePane::Input => {
+                            app_tab = AppTab::Firmware;
+                        }
+                        KeyCode::Char('g') if active_pane != ActivePane::Input => {
+                            app_tab = AppTab::Findings;
+                        }
+                        KeyCode::Char('t') if active_pane != ActivePane::Input => {
                             app_tab = AppTab::Toolkit;
                         }
 
-                        // Navigation in Sidebar
+                        // ── Sidebar navigation ──────────────────────
                         KeyCode::Up if active_pane == ActivePane::Sidebar => {
                             if app_tab == AppTab::Strings {
                                 let i = match strings_list_state.selected() {
@@ -488,12 +719,12 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                             }
                         }
 
-                        // Execution
+                        // ── Execution ───────────────────────────────
                         KeyCode::Enter if active_pane == ActivePane::Sidebar => {
-                            if app_tab == AppTab::Decompiler || app_tab == AppTab::XRefs {
+                            if app_tab == AppTab::Decompiler || app_tab == AppTab::XRefs || app_tab == AppTab::Overview {
                                 if let Some(i) = list_state.selected() {
-                                    if let Some(f) = functions.get(i) {
-                                        let func_name = f.name.clone();
+                                    if let Some(func) = functions.get(i) {
+                                        let func_name = func.name.clone();
 
                                         // Fetch Decompile
                                         let tx_dec = tx_decompile.clone();
@@ -535,7 +766,7 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                             }
                         }
 
-                        // Input Mode Handling
+                        // ── Input mode handling ─────────────────────
                         KeyCode::Char(c) if active_pane == ActivePane::Input => {
                             input.push(c);
                             history_index = None;
@@ -562,7 +793,6 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                                         break;
                                     }
                                 }
-                                // If not found going up, we stay where we are.
                             }
                         }
                         KeyCode::Down if active_pane == ActivePane::Input => {
@@ -596,6 +826,12 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                                 command_history.push(cmd.clone());
                                 if cmd == "quit" || cmd == "exit" || cmd == "q" {
                                     break;
+                                }
+
+                                // If `info` command, also update overview
+                                if cmd.starts_with("info ") {
+                                    let target = cmd.strip_prefix("info ").unwrap_or("").trim().to_string();
+                                    overview_lines = binary_info::scan_binary_info(&target);
                                 }
 
                                 let state_clone = Arc::clone(&state);
@@ -667,8 +903,8 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
                                 if app_tab == AppTab::Decompiler || app_tab == AppTab::XRefs {
                                     if let Some(i) = list_state.selected() {
-                                        if let Some(f) = functions.get(i) {
-                                            let func_name = f.name.clone();
+                                        if let Some(func) = functions.get(i) {
+                                            let func_name = func.name.clone();
                                             let tx_dec = tx_decompile.clone();
                                             let port = bridge_port;
                                             decompiled_code =
@@ -724,4 +960,147 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
     )?;
     terminal.show_cursor()?;
     Ok(())
+}
+
+// ─── Reusable Widget Renderers ────────────────────────────────────────────────
+
+/// Render the function sidebar (shared by Decompiler, XRefs, ROP, Overview).
+fn render_sidebar_functions(
+    f: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    focused: bool,
+    functions: &[FunctionInfo],
+    list_state: &mut ListState,
+) {
+    let func_items: Vec<ListItem> = functions
+        .iter()
+        .map(|func| {
+            ListItem::new(Line::from(vec![
+                Span::styled(&func.name, Style::default().fg(theme::BONE)),
+                Span::styled(format!(" @ {}", func.address), theme::address()),
+            ]))
+        })
+        .collect();
+    let func_list = List::new(func_items)
+        .block(themed_block("Functions", focused))
+        .highlight_style(theme::list_highlight())
+        .highlight_symbol(HIGHLIGHT_SYMBOL);
+    f.render_stateful_widget(func_list, area, list_state);
+}
+
+/// Render the Overview tab — shows the ASCII banner + binary summary.
+fn render_overview(
+    f: &mut ratatui::Frame,
+    sidebar_area: ratatui::layout::Rect,
+    main_area: ratatui::layout::Rect,
+    sidebar_focused: bool,
+    main_focused: bool,
+    functions: &[FunctionInfo],
+    list_state: &mut ListState,
+    overview_lines: &[String],
+    tick: u64,
+) {
+    render_sidebar_functions(f, sidebar_area, sidebar_focused, functions, list_state);
+
+    // Build main panel content: banner + overview info
+    let mut lines: Vec<Line> = Vec::new();
+
+    // ASCII banner with full fire gradient
+    lines.push(Line::from(""));
+    for banner_line in theme::gradient_banner() {
+        lines.push(banner_line);
+    }
+
+    // Subtitle with shimmer
+    lines.push(Line::from(""));
+    let phase = ((tick % 40) as f32) / 40.0;
+    let sub_color = theme::lerp_color(theme::ORANGE, theme::SOLAR, phase);
+    lines.push(Line::from(Span::styled(
+        format!("    {}", theme::BANNER_SUBTITLE),
+        Style::default()
+            .fg(sub_color)
+            .add_modifier(Modifier::ITALIC),
+    )));
+    lines.push(Line::from(""));
+
+    // Gradient rule
+    let rule_width = main_area.width.saturating_sub(4) as usize;
+    lines.push(theme::gradient_rule(rule_width, theme::EMBER, theme::SOLAR));
+    lines.push(Line::from(""));
+
+    if overview_lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  Run  info <binary>  to display binary metadata here.",
+            Style::default().fg(theme::ASH),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Adapters: Ghidra · Rizin · Binwalk · checksec · ROP",
+            Style::default().fg(theme::SMOKE),
+        )));
+    } else {
+        for (i, line) in overview_lines.iter().enumerate() {
+            let t = i as f32 / (overview_lines.len()).max(1) as f32;
+            let c = theme::gradient(theme::FIRE_GRADIENT, t);
+            lines.push(Line::from(Span::styled(
+                format!("  {}", line),
+                Style::default().fg(c),
+            )));
+        }
+    }
+
+    // Status bar at bottom
+    lines.push(Line::from(""));
+    let bridge_status = if overview_lines.iter().any(|l| l.contains("Format:")) {
+        "● binary loaded"
+    } else {
+        "○ no binary loaded"
+    };
+    lines.push(theme::gradient_status(&format!(
+        "  {} │ v{} │ {}",
+        bridge_status,
+        env!("CARGO_PKG_VERSION"),
+        "press TAB to navigate"
+    )));
+
+    let overview_block = Paragraph::new(lines)
+        .block(themed_block("Overview", main_focused))
+        .alignment(Alignment::Left)
+        .wrap(Wrap { trim: false });
+    f.render_widget(overview_block, main_area);
+}
+
+/// Render a placeholder panel with themed text.
+fn render_placeholder(
+    f: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    focused: bool,
+    title: &str,
+    lines: &[&str],
+) {
+    let content: Vec<Line> = std::iter::once(Line::from(""))
+        .chain(lines.iter().enumerate().map(|(i, line)| {
+            if line.is_empty() {
+                Line::from("")
+            } else if line.starts_with("  ") {
+                // Indented lines are commands — highlight them
+                Line::from(Span::styled(
+                    *line,
+                    Style::default().fg(theme::AMBER).add_modifier(Modifier::BOLD),
+                ))
+            } else if line.starts_with('[') {
+                // Severity tags
+                let t = i as f32 / lines.len().max(1) as f32;
+                let c = theme::gradient(theme::FIRE_GRADIENT, t);
+                Line::from(Span::styled(*line, Style::default().fg(c)))
+            } else {
+                Line::from(Span::styled(*line, Style::default().fg(theme::SAND)))
+            }
+        }))
+        .collect();
+
+    let block = Paragraph::new(content)
+        .block(themed_block(title, focused))
+        .wrap(Wrap { trim: false });
+    f.render_widget(block, area);
 }

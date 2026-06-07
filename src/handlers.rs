@@ -155,8 +155,11 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
         Some(Commands::Toolkit(tk_cmd)) => {
             use crate::adapter::ToolAdapter;
             use crate::cli::ToolkitCommands;
-            use crate::toolkit::{binwalk, checksec, rizin, rop};
+            #[cfg(feature = "binwalk")]
+            use crate::toolkit::binwalk;
+            use crate::toolkit::{checksec, rizin, rop};
             match tk_cmd {
+                #[cfg(feature = "binwalk")]
                 ToolkitCommands::Binwalk { file_path, format } => {
                     let adapter = binwalk::BinwalkAdapter;
                     print_tool_events(adapter.run(&file_path)?, &format)?;

@@ -1,3 +1,9 @@
+//! External tool process runner with timeout and cancellation support.
+//!
+//! Used by adapters that shell out to external binaries (e.g. `rizin`).
+//! Provides output capture with size limits and an optional cancellation
+//! token for cooperative shutdown.
+
 use crate::adapter::schema::{ToolCommand, ToolEvent};
 use crate::error::{Result, RevisorError};
 use std::io::Write;
@@ -5,6 +11,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+/// Resource limits for an external tool process.
 #[derive(Debug, Clone)]
 pub struct ToolProcessLimits {
     pub timeout: Duration,
@@ -20,14 +27,23 @@ impl Default for ToolProcessLimits {
     }
 }
 
+/// Result of running an external tool process.
 #[derive(Debug, Clone)]
 pub struct ToolProcessResult {
+    /// Exit code of the child process, if it completed.
     pub status_code: Option<i32>,
+    /// Structured events captured from stdout/stderr.
     pub events: Vec<ToolEvent>,
+    /// True if the process was killed due to timeout.
     pub timed_out: bool,
+    /// True if the process was killed via cancellation token.
     pub cancelled: bool,
 }
 
+/// Run an external tool process with the given resource limits.
+///
+/// Convenience wrapper around [`run_tool_process_with_cancel`] that
+/// always runs to completion (no cancellation).
 pub fn run_tool_process(
     adapter: &str,
     command: &ToolCommand,
@@ -37,6 +53,10 @@ pub fn run_tool_process(
     run_tool_process_with_cancel(adapter, command, limits, &cancel)
 }
 
+/// Run an external tool process that can be cancelled cooperatively.
+///
+/// The `cancel` flag is checked periodically; when set to `true` the
+/// child process is killed and [`ToolProcessResult::cancelled`] is set.
 pub fn run_tool_process_with_cancel(
     adapter: &str,
     command: &ToolCommand,

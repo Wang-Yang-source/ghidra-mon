@@ -6,8 +6,12 @@ use crate::adapter::schema::{
 use crate::error::{Result, RevisorError};
 use std::time::Duration;
 
+/// JSON parser version string emitted in capability metadata.
 pub const PARSER_VERSION: &str = "rizin-json-v1";
 
+/// Analysis action to perform via the external `rizin` binary.
+///
+/// Each variant maps to a Rizin JSON command (`ij`, `aflj`, `izzj`, etc.).
 #[derive(Debug, Clone, Copy)]
 pub enum RizinAction {
     Info,
@@ -20,6 +24,9 @@ pub enum RizinAction {
 }
 
 impl RizinAction {
+    /// Parse a user-supplied action string (e.g. `"functions"`, `"disasm"`).
+    ///
+    /// Accepts abbreviations: `"funcs"` for functions, `"refs"` for xrefs.
     pub fn parse(value: &str) -> Result<Self> {
         match value {
             "info" => Ok(Self::Info),
@@ -60,6 +67,11 @@ impl RizinAction {
     }
 }
 
+/// Rizin adapter that shells out to the `rizin` CLI.
+///
+/// Requires `rizin` on `$PATH` (or set the `RIZIN` env var).
+/// Results are parsed from Rizin's JSON output and converted to
+/// structured [`ToolEvent`]s.
 pub struct RizinAdapter {
     pub action: RizinAction,
     pub query: Option<String>,
@@ -131,6 +143,10 @@ impl RizinAdapter {
     }
 }
 
+/// Parse raw Rizin JSON output into structured [`ToolEvent`]s.
+///
+/// The `action` determines the expected JSON shape (array of functions,
+/// single info object, disassembly listing, etc.).
 pub fn parse_rizin_json(action: RizinAction, text: &str) -> Result<Vec<ToolEvent>> {
     let cleaned = text.trim_matches(char::from(0)).trim();
     if cleaned.is_empty() {

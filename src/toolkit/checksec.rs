@@ -9,8 +9,14 @@ use goblin::elf::header::{ET_DYN, ET_EXEC};
 use goblin::elf::program_header::{PF_X, PT_GNU_RELRO, PT_GNU_STACK};
 use std::fs;
 
+/// Parser version string emitted in capability metadata.
 pub const PARSER_VERSION: &str = "native-elf-checksec-v1";
 
+/// ELF security hardening checker backed by [`goblin`].
+///
+/// Checks for PIE, NX (non-executable stack), RELRO (full/partial),
+/// stack canaries, and symbol table stripping. Currently supports
+/// ELF targets; PE and Mach-O support is planned.
 pub struct ChecksecAdapter;
 
 impl ToolAdapter for ChecksecAdapter {
@@ -47,6 +53,10 @@ impl ToolAdapter for ChecksecAdapter {
     }
 }
 
+/// Analyze an ELF binary and return its security hardening features.
+///
+/// Returns PIE, NX, RELRO, Canary, and Stripped status. Currently
+/// only ELF is supported; PE and Mach-O targets return an error.
 pub fn analyze_security_features(file_path: &str) -> Result<Vec<SecurityFeature>> {
     let buffer = fs::read(file_path).map_err(|e| RevisorError::io("read checksec target", e))?;
     match Object::parse(&buffer).map_err(|e| RevisorError::Other(format!("parse target: {e}")))? {

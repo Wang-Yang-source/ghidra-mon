@@ -6,6 +6,11 @@ use iced_x86::{Decoder, DecoderOptions, Formatter, NasmFormatter};
 use memmap2::Mmap;
 use std::fs::File;
 
+/// ROP gadget finder backed by `iced-x86`.
+///
+/// Memory-maps the target binary and scans for `ret`-terminated
+/// instruction sequences. Gadgets are deduplicated by address and
+/// sorted. Currently hard-coded to 64-bit x86.
 pub struct RopAdapter;
 
 impl ToolAdapter for RopAdapter {
@@ -47,6 +52,11 @@ impl ToolAdapter for RopAdapter {
     }
 }
 
+/// Find ROP gadgets in a binary file.
+///
+/// Uses `iced-x86` to disassemble the raw bytes, locating `ret`-
+/// terminated sequences (up to 15 bytes before each `ret`/`retn`).
+/// Returns gadgets sorted and deduplicated by address.
 pub fn find_structured_gadgets(file_path: &str) -> Result<Vec<Gadget>> {
     let file = File::open(file_path).map_err(|e| RevisorError::io("open ROP target", e))?;
     let mmap = unsafe { Mmap::map(&file).map_err(|e| RevisorError::io("map ROP target", e))? };

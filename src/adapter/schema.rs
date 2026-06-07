@@ -1,5 +1,12 @@
+//! Shared data types for the adapter abstraction layer.
+//!
+//! These types form the lingua franca between toolkit backends and the
+//! TUI / CLI / MCP frontends. Every backend emits [`ToolEvent`]s in these
+//! formats so consumers can treat Ghidra, Rizin, binwalk, etc. uniformly.
+
 use serde::{Deserialize, Serialize};
 
+/// Output format a backend adapter can produce.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum OutputFormat {
     Json,
