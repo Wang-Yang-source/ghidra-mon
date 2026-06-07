@@ -14,7 +14,16 @@ use clap::{Parser, Subcommand};
         ghidrai tui\n  \
         ghidrai toolkit binwalk ./firmware.bin\n  \
         ghidrai toolkit checksec ./tests/crackme\n  \
+        ghidrai toolkit cwe ./tests/crackme\n  \
+        ghidrai toolkit lief ./tests/crackme\n  \
+        ghidrai toolkit strings ./tests/crackme\n  \
+        ghidrai toolkit disasm ./tests/crackme\n  \
+        ghidrai toolkit entropy ./tests/crackme\n  \
+        ghidrai toolkit gdb ./tests/crackme\n  \
+        ghidrai toolkit gdb-mi ./tests/crackme\n  \
         ghidrai toolkit rop ./tests/crackme\n  \
+        ghidrai toolkit volatility ./tests/crackme\n  \
+        ghidrai toolkit all ./tests/crackme --format json\n  \
         ghidrai analyze /bin/ls -p /tmp/proj -n test_ls\n  \
         ghidrai bridge -p /tmp/proj -n test_ls\n  \
         ghidrai query decompile main"
@@ -160,7 +169,105 @@ pub enum ToolkitCommands {
     /// Inspect ELF hardening features
     Checksec {
         /// Binary to inspect
-        #[arg(help = "Path to the ELF binary file")]
+        #[arg(help = "Path to the ELF/PE/Mach-O binary file")]
+        file_path: String,
+        /// Output format: pretty text or json event stream
+        #[arg(
+            short,
+            long,
+            default_value = "pretty",
+            help = "Output format (pretty | json)"
+        )]
+        format: String,
+    },
+    /// Run native CWE-style risk triage
+    Cwe {
+        /// Binary to inspect
+        #[arg(help = "Path to the binary file")]
+        file_path: String,
+        /// Output format: pretty text or json event stream
+        #[arg(
+            short,
+            long,
+            default_value = "pretty",
+            help = "Output format (pretty | json)"
+        )]
+        format: String,
+    },
+    /// Inspect object metadata, sections, imports, exports, and symbols
+    Lief {
+        /// Binary/object to inspect
+        #[arg(help = "Path to the ELF/PE/Mach-O file")]
+        file_path: String,
+        /// Output format: pretty text or json event stream
+        #[arg(
+            short,
+            long,
+            default_value = "pretty",
+            help = "Output format (pretty | json)"
+        )]
+        format: String,
+    },
+    /// Extract printable strings with the native Rust scanner
+    Strings {
+        /// Binary to scan
+        #[arg(help = "Path to the binary file")]
+        file_path: String,
+        /// Output format: pretty text or json event stream
+        #[arg(
+            short,
+            long,
+            default_value = "pretty",
+            help = "Output format (pretty | json)"
+        )]
+        format: String,
+    },
+    /// Disassemble the executable text section with the native Rust disassembler
+    Disasm {
+        /// Binary to disassemble
+        #[arg(help = "Path to the ELF/PE binary file")]
+        file_path: String,
+        /// Output format: pretty text or json event stream
+        #[arg(
+            short,
+            long,
+            default_value = "pretty",
+            help = "Output format (pretty | json)"
+        )]
+        format: String,
+    },
+    /// Measure entropy for packer/compression triage
+    Entropy {
+        /// Binary/blob to inspect
+        #[arg(help = "Path to the binary or blob file")]
+        file_path: String,
+        /// Output format: pretty text or json event stream
+        #[arg(
+            short,
+            long,
+            default_value = "pretty",
+            help = "Output format (pretty | json)"
+        )]
+        format: String,
+    },
+    /// Query GDB batch metadata without launching an interactive debugger
+    Gdb {
+        /// Binary to inspect with GDB
+        #[arg(help = "Path to the binary file")]
+        file_path: String,
+        /// Output format: pretty text or json event stream
+        #[arg(
+            short,
+            long,
+            default_value = "pretty",
+            help = "Output format (pretty | json)"
+        )]
+        format: String,
+    },
+    /// Query GDB/MI metadata through the machine interface
+    GdbMi {
+        /// Binary to inspect with GDB/MI
+        #[arg(help = "Path to the binary file")]
         file_path: String,
         /// Output format: pretty text or json event stream
         #[arg(
@@ -174,6 +281,34 @@ pub enum ToolkitCommands {
     /// Find ROP gadgets
     Rop {
         /// Binary to scan
+        #[arg(help = "Path to the binary file")]
+        file_path: String,
+        /// Output format: pretty text or json event stream
+        #[arg(
+            short,
+            long,
+            default_value = "pretty",
+            help = "Output format (pretty | json)"
+        )]
+        format: String,
+    },
+    /// Run native Volatility-style memory/blob triage
+    Volatility {
+        /// Memory dump or binary blob to triage
+        #[arg(help = "Path to the memory dump or blob")]
+        file_path: String,
+        /// Output format: pretty text or json event stream
+        #[arg(
+            short,
+            long,
+            default_value = "pretty",
+            help = "Output format (pretty | json)"
+        )]
+        format: String,
+    },
+    /// Run the currently integrated native toolkit passes in one shot
+    All {
+        /// Binary to inspect
         #[arg(help = "Path to the binary file")]
         file_path: String,
         /// Output format: pretty text or json event stream

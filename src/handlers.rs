@@ -157,7 +157,9 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
             use crate::cli::ToolkitCommands;
             #[cfg(feature = "binwalk")]
             use crate::toolkit::binwalk;
-            use crate::toolkit::{checksec, rizin, rop};
+            use crate::toolkit::{
+                checksec, cwe, disasm, entropy, gdb, lief, rizin, rop, strings, volatility,
+            };
             match tk_cmd {
                 #[cfg(feature = "binwalk")]
                 ToolkitCommands::Binwalk { file_path, format } => {
@@ -168,9 +170,77 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
                     let adapter = checksec::ChecksecAdapter;
                     print_tool_events(adapter.run(&file_path)?, &format)?;
                 }
+                ToolkitCommands::Cwe { file_path, format } => {
+                    let adapter = cwe::CweAdapter;
+                    print_tool_events(adapter.run(&file_path)?, &format)?;
+                }
+                ToolkitCommands::Lief { file_path, format } => {
+                    let adapter = lief::LiefAdapter;
+                    print_tool_events(adapter.run(&file_path)?, &format)?;
+                }
+                ToolkitCommands::Strings { file_path, format } => {
+                    let adapter = strings::StringsAdapter;
+                    print_tool_events(adapter.run(&file_path)?, &format)?;
+                }
+                ToolkitCommands::Disasm { file_path, format } => {
+                    let adapter = disasm::DisasmAdapter;
+                    print_tool_events(adapter.run(&file_path)?, &format)?;
+                }
+                ToolkitCommands::Entropy { file_path, format } => {
+                    let adapter = entropy::EntropyAdapter;
+                    print_tool_events(adapter.run(&file_path)?, &format)?;
+                }
+                ToolkitCommands::Gdb { file_path, format } => {
+                    let adapter = gdb::GdbAdapter;
+                    print_tool_events(adapter.run(&file_path)?, &format)?;
+                }
+                ToolkitCommands::GdbMi { file_path, format } => {
+                    let adapter = gdb::GdbMiAdapter;
+                    print_tool_events(adapter.run(&file_path)?, &format)?;
+                }
                 ToolkitCommands::Rop { file_path, format } => {
                     let adapter = rop::RopAdapter;
                     print_tool_events(adapter.run(&file_path)?, &format)?;
+                }
+                ToolkitCommands::Volatility { file_path, format } => {
+                    let adapter = volatility::VolatilityAdapter;
+                    print_tool_events(adapter.run(&file_path)?, &format)?;
+                }
+                ToolkitCommands::All { file_path, format } => {
+                    let adapters: Vec<Box<dyn ToolAdapter>> = vec![
+                        Box::new(lief::LiefAdapter),
+                        Box::new(checksec::ChecksecAdapter),
+                        Box::new(cwe::CweAdapter),
+                        Box::new(entropy::EntropyAdapter),
+                        Box::new(strings::StringsAdapter),
+                        Box::new(volatility::VolatilityAdapter),
+                        Box::new(disasm::DisasmAdapter),
+                        Box::new(rop::RopAdapter),
+                    ];
+                    let mut events = Vec::new();
+                    for adapter in adapters {
+                        match adapter.run(&file_path) {
+                            Ok(mut adapter_events) => events.append(&mut adapter_events),
+                            Err(e) => events.push(crate::adapter::schema::ToolEvent::error(
+                                adapter.name(),
+                                format!("{} failed: {}", adapter.name(), e),
+                            )),
+                        }
+                    }
+
+                    #[cfg(feature = "binwalk")]
+                    {
+                        let adapter = binwalk::BinwalkAdapter;
+                        match adapter.run(&file_path) {
+                            Ok(mut adapter_events) => events.append(&mut adapter_events),
+                            Err(e) => events.push(crate::adapter::schema::ToolEvent::error(
+                                adapter.name(),
+                                format!("{} failed: {}", adapter.name(), e),
+                            )),
+                        }
+                    }
+
+                    print_tool_events(events, &format)?;
                 }
                 ToolkitCommands::Rizin {
                     file_path,

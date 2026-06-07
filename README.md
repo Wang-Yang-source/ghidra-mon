@@ -40,6 +40,8 @@ Ghidrai 是一个全开源、纯命令行的终端逆向 TUI 工具合集。它�
 
 Ghidra、Rizin、Binwalk、ROPgadget、GDB、Frida、Volatility、LIEF、Angr、Unicorn 这类工具都应该被视为后端引擎。Ghidrai 本身负责统一工作流、任务生命周期、输出解析、缓存、快捷键和 TUI 呈现。
 
+项目长期产品记忆和体验原则记录在 [MEMORY.md](MEMORY.md)。
+
 ## 设计哲学
 
 - 终端优先：所有核心能力必须能在 Linux CLI/TUI 环境中运行，不能依赖 GUI。
@@ -88,14 +90,15 @@ TUI 层只消费 Ghidrai 的内部事件模型，不直接理解某个工具的�
 | 后端 | 用途 | 集成原则 |
 |------|------|----------|
 | checksec | PIE、RELRO、Canary、NX 等保护检测 | 使用自有 Rust ELF 检测，输出统一 SecurityFeature 事件 |
-| ROPgadget/ROPper | gadget 搜索、ROP 链辅助 | 优先 API/结构化输出；文本 parser 必须版本锁定 |
+| entropy | 熵分析、壳/压缩/加密初筛 | 使用 Rust 原生 Shannon entropy，输出段级结构化结果和 Finding |
+| ROPgadget/ROPper | gadget 搜索、ROP 链辅助 | 当前先用 Rust 原生 x86/x86-64 ELF/PE gadget 扫描；外部 ROPgadget/ROPper 后续作为可替换后端 |
 | LIEF | ELF/PE/Mach-O 解析和修改 | 优先走库 API，再封装成 Ghidrai schema |
 
 ### P2: 动态分析
 
 | 后端 | 用途 | 集成原则 |
 |------|------|----------|
-| GDB | 断点、寄存器、栈、内存、单步 | 使用 GDB/MI 或 Python API，不解析彩色 TUI |
+| GDB | 断点、寄存器、栈、内存、单步 | 当前提供 batch metadata 和 GDB/MI metadata 入口；后续调试动作继续走 GDB/MI，不解析彩色 TUI |
 | GEF/Pwndbg | 调试增强 | 作为用户可选环境，不把其 ANSI 输出当稳定数据源 |
 | Frida | 动态插桩、函数 trace | 使用自定义 JS agent 输出 NDJSON |
 
@@ -162,10 +165,19 @@ ghidrai analyze ./tests/crackme -p /tmp/ghidra_proj -n crackme
 ghidrai bridge -p /tmp/ghidra_proj -n crackme
 ghidrai query list_functions
 
-# 工具合集后端：固件/二进制体检/ROP/Rizin JSON
+# 工具合集后端：固件/对象解析/二进制体检/熵分析/CWE 风险/内存取证/字符串/反汇编/GDB/ROP/Rizin JSON
 ghidrai toolkit binwalk ./firmware.bin
 ghidrai toolkit checksec ./tests/crackme
+ghidrai toolkit cwe ./tests/crackme
+ghidrai toolkit lief ./tests/crackme
+ghidrai toolkit strings ./tests/crackme
+ghidrai toolkit disasm ./tests/crackme
+ghidrai toolkit entropy ./tests/crackme
+ghidrai toolkit gdb ./tests/crackme
+ghidrai toolkit gdb-mi ./tests/crackme
 ghidrai toolkit rop ./tests/crackme
+ghidrai toolkit volatility ./memory.dump
+ghidrai toolkit all ./tests/crackme --format json
 ghidrai toolkit rizin ./tests/crackme --action functions --format json
 ghidrai toolkit rizin ./tests/crackme --action disasm --query main
 ```
@@ -190,8 +202,15 @@ src/
 ├── toolkit/            # native CLI toolkit integrations
 │   ├── binwalk.rs
 │   ├── checksec.rs
+│   ├── cwe.rs
+│   ├── disasm.rs
+│   ├── entropy.rs
+│   ├── gdb.rs
+│   ├── lief.rs
 │   ├── rizin.rs
-│   └── rop.rs
+│   ├── rop.rs
+│   ├── strings.rs
+│   └── volatility.rs
 ├── bridge.rs           # Ghidra backend bridge
 ├── mcp.rs              # optional JSON-RPC/MCP compatibility layer
 ├── setup.rs            # Ghidra backend installer

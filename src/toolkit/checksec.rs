@@ -10,13 +10,25 @@ use goblin::elf::program_header::{PF_X, PT_GNU_RELRO, PT_GNU_STACK};
 use std::fs;
 
 /// Parser version string emitted in capability metadata.
-pub const PARSER_VERSION: &str = "native-elf-checksec-v1";
+pub const PARSER_VERSION: &str = "native-checksec-v2";
 
-/// ELF security hardening checker backed by [`goblin`].
+// ── PE DLL characteristics constants ────────────────────────────────────────
+const IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA: u16 = 0x0020;
+const IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE: u16 = 0x0040;
+const IMAGE_DLLCHARACTERISTICS_FORCE_INTEGRITY: u16 = 0x0080;
+const IMAGE_DLLCHARACTERISTICS_NX_COMPAT: u16 = 0x0100;
+const IMAGE_DLLCHARACTERISTICS_NO_SEH: u16 = 0x0400;
+const IMAGE_DLLCHARACTERISTICS_GUARD_CF: u16 = 0x4000;
+
+// ── Mach-O flag constant ────────────────────────────────────────────────────
+const MH_PIE: u32 = 0x0020_0000;
+
+/// Binary security hardening checker backed by [`goblin`].
 ///
-/// Checks for PIE, NX (non-executable stack), RELRO (full/partial),
-/// stack canaries, and symbol table stripping. Currently supports
-/// ELF targets; PE and Mach-O support is planned.
+/// Checks security features across ELF, PE, and Mach-O binaries:
+/// - **ELF**: PIE, NX, RELRO, stack canary, stripped symbols
+/// - **PE**: ASLR/DynamicBase, DEP/NX, CFG, Integrity, SEH, High Entropy ASLR
+/// - **Mach-O**: PIE, stack canary, ARC
 pub struct ChecksecAdapter;
 
 impl ToolAdapter for ChecksecAdapter {
@@ -30,7 +42,7 @@ impl ToolAdapter for ChecksecAdapter {
 
     fn capabilities(&self) -> Vec<AdapterCapability> {
         vec![AdapterCapability {
-            name: "elf_security_features".to_string(),
+            name: "security_features".to_string(),
             formats: vec![OutputFormat::NativeRust],
             read_only: true,
             parser_version: Some(PARSER_VERSION.to_string()),
@@ -53,25 +65,22 @@ impl ToolAdapter for ChecksecAdapter {
     }
 }
 
-/// Analyze an ELF binary and return its security hardening features.
+/// Analyze a binary and return its security hardening features.
 ///
-/// Returns PIE, NX, RELRO, Canary, and Stripped status. Currently
-/// only ELF is supported; PE and Mach-O targets return an error.
+/// Supports ELF, PE, and Mach-O executable formats.
 pub fn analyze_security_features(file_path: &str) -> Result<Vec<SecurityFeature>> {
     let buffer = fs::read(file_path).map_err(|e| RevisorError::io("read checksec target", e))?;
     match Object::parse(&buffer).map_err(|e| RevisorError::Other(format!("parse target: {e}")))? {
         Object::Elf(elf) => Ok(analyze_elf(&elf)),
-        Object::PE(_) => Err(RevisorError::Other(
-            "checksec currently supports ELF targets; PE support is planned".to_string(),
-        )),
-        Object::Mach(_) => Err(RevisorError::Other(
-            "checksec currently supports ELF targets; Mach-O support is planned".to_string(),
-        )),
+        Object::PE(pe) => Ok(analyze_pe(&pe)),
+        Object::Mach(mach) => analyze_mach(&mach),
         _ => Err(RevisorError::Other(
             "checksec target is not a supported executable".to_string(),
         )),
     }
 }
+
+// ── ELF analysis ────────────────────────────────────────────────────────────
 
 fn analyze_elf(elf: &goblin::elf::Elf<'_>) -> Vec<SecurityFeature> {
     vec![
@@ -156,6 +165,100 @@ fn is_stripped(elf: &goblin::elf::Elf<'_>) -> bool {
     elf.syms.is_empty()
 }
 
+// ── PE analysis ─────────────────────────────────────────────────────────────
+
+fn analyze_pe(pe: &goblin::pe::PE<'_>) -> Vec<SecurityFeature> {
+    let dll_chars = pe
+        .header
+        .optional_header
+        .map(|oh| oh.windows_fields.dll_characteristics)
+        .unwrap_or(0);
+
+    vec![
+        security_feature(
+            "ASLR/DynamicBase",
+            Some(dll_chars & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE != 0),
+            Some("IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE"),
+        ),
+        security_feature(
+            "DEP/NX",
+            Some(dll_chars & IMAGE_DLLCHARACTERISTICS_NX_COMPAT != 0),
+            Some("IMAGE_DLLCHARACTERISTICS_NX_COMPAT"),
+        ),
+        security_feature(
+            "CFG",
+            Some(dll_chars & IMAGE_DLLCHARACTERISTICS_GUARD_CF != 0),
+            Some("IMAGE_DLLCHARACTERISTICS_GUARD_CF"),
+        ),
+        security_feature(
+            "Integrity",
+            Some(dll_chars & IMAGE_DLLCHARACTERISTICS_FORCE_INTEGRITY != 0),
+            Some("IMAGE_DLLCHARACTERISTICS_FORCE_INTEGRITY"),
+        ),
+        security_feature(
+            "SEH",
+            Some(dll_chars & IMAGE_DLLCHARACTERISTICS_NO_SEH == 0),
+            Some(if dll_chars & IMAGE_DLLCHARACTERISTICS_NO_SEH != 0 {
+                "NO_SEH set — SEH disabled"
+            } else {
+                "SEH active"
+            }),
+        ),
+        security_feature(
+            "High Entropy ASLR",
+            Some(dll_chars & IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA != 0),
+            Some("IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA"),
+        ),
+    ]
+}
+
+// ── Mach-O analysis ─────────────────────────────────────────────────────────
+
+fn analyze_mach(mach: &goblin::mach::Mach) -> Result<Vec<SecurityFeature>> {
+    match mach {
+        goblin::mach::Mach::Binary(macho) => Ok(analyze_single_macho(macho)),
+        goblin::mach::Mach::Fat(fat) => {
+            let first = fat.get(0).map_err(|e| {
+                RevisorError::Other(format!("failed to read first fat architecture: {e}"))
+            })?;
+            match first {
+                goblin::mach::SingleArch::MachO(macho) => Ok(analyze_single_macho(&macho)),
+                goblin::mach::SingleArch::Archive(_) => Err(RevisorError::Other(
+                    "checksec does not support archive entries in fat binaries".to_string(),
+                )),
+            }
+        }
+    }
+}
+
+fn analyze_single_macho(macho: &goblin::mach::MachO<'_>) -> Vec<SecurityFeature> {
+    let flags = macho.header.flags;
+
+    let has_canary = macho_has_symbol(macho, "___stack_chk_fail")
+        || macho_has_symbol(macho, "___stack_chk_guard");
+
+    let has_arc = macho_has_symbol(macho, "_objc_release");
+
+    vec![
+        security_feature("PIE", Some(flags & MH_PIE != 0), Some("MH_PIE header flag")),
+        security_feature(
+            "Canary",
+            Some(has_canary),
+            Some("___stack_chk_fail/___stack_chk_guard symbol"),
+        ),
+        security_feature("ARC", Some(has_arc), Some("_objc_release symbol")),
+    ]
+}
+
+fn macho_has_symbol(macho: &goblin::mach::MachO<'_>, target: &str) -> bool {
+    macho
+        .symbols()
+        .filter_map(|sym| sym.ok())
+        .any(|(name, _)| name == target)
+}
+
+// ── Shared helpers ──────────────────────────────────────────────────────────
+
 fn security_feature(name: &str, enabled: Option<bool>, value: Option<&str>) -> SecurityFeature {
     SecurityFeature {
         name: name.to_string(),
@@ -214,5 +317,32 @@ mod tests {
 
         assert!(events.iter().any(|event| event.message.starts_with("NX:")));
         assert!(events.iter().all(|event| event.adapter == "checksec"));
+    }
+
+    #[test]
+    fn pe_dll_characteristics_flags_are_correct() {
+        assert_eq!(IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA, 0x0020);
+        assert_eq!(IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE, 0x0040);
+        assert_eq!(IMAGE_DLLCHARACTERISTICS_FORCE_INTEGRITY, 0x0080);
+        assert_eq!(IMAGE_DLLCHARACTERISTICS_NX_COMPAT, 0x0100);
+        assert_eq!(IMAGE_DLLCHARACTERISTICS_NO_SEH, 0x0400);
+        assert_eq!(IMAGE_DLLCHARACTERISTICS_GUARD_CF, 0x4000);
+    }
+
+    #[test]
+    fn macho_pie_flag_is_correct() {
+        assert_eq!(MH_PIE, 0x0020_0000);
+    }
+
+    #[test]
+    fn format_feature_output() {
+        let feat = security_feature("TestFeat", Some(true), Some("details"));
+        assert_eq!(format_feature(&feat), "TestFeat: enabled (details)");
+
+        let feat_disabled = security_feature("TestFeat", Some(false), None);
+        assert_eq!(format_feature(&feat_disabled), "TestFeat: disabled");
+
+        let feat_unknown = security_feature("TestFeat", None, Some("info"));
+        assert_eq!(format_feature(&feat_unknown), "TestFeat: unknown (info)");
     }
 }

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Centralized color theme for the Ghidrai TUI.
 //!
 //! Palette: Orange-Yellow + Fire-Red gradient, inspired by Gemini's visual
@@ -86,12 +87,12 @@ pub fn gradient(stops: &[Color], t: f32) -> Color {
 
 /// The canonical fire gradient: deep red → ember → orange → amber → solar gold.
 pub const FIRE_GRADIENT: &[Color] = &[
-    Color::Rgb(160, 30, 10),  // deep crimson
-    FIRE,                      // fire red
-    EMBER,                     // ember
-    ORANGE,                    // warm orange
-    AMBER,                     // amber gold
-    SOLAR,                     // solar yellow
+    Color::Rgb(160, 30, 10), // deep crimson
+    FIRE,                    // fire red
+    EMBER,                   // ember
+    ORANGE,                  // warm orange
+    AMBER,                   // amber gold
+    SOLAR,                   // solar yellow
 ];
 
 /// Render a string as a single `Line` with per-character horizontal gradient.

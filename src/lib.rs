@@ -1,21 +1,21 @@
 //! # Ghidrai — Terminal Reverse Engineering Toolkit Aggregator
 //!
 //! **Ghidrai** is an open-source terminal UI toolkit that unifies multiple
-//! reverse-engineering backends (Ghidra, Rizin, binwalk, checksec, ROP gadget
-//! finders) behind a single TUI workspace. It provides:
+//! reverse-engineering backends (Ghidra, Rizin, binwalk, checksec, GDB,
+//! native CWE triage, entropy triage, memory triage, ROP gadget finders) behind a single TUI workspace. It provides:
 //!
 //! - A **terminal UI** for interactive binary analysis
 //! - A **CLI** for scripting and automation
 //! - An **MCP server** for AI-assisted reverse engineering
 //! - A **daemon mode** with a Unix socket for tool delegation
-//! - Pluggable **toolkit adapters** (binwalk, checksec, rizin, ROP)
+//! - Pluggable **toolkit adapters** (binwalk, checksec, CWE triage, entropy, GDB/GDB-MI, memory triage, rizin, ROP)
 //!
 //! ## Quick Start
 //!
 //! ```rust
 //! use ghidrai::bridge::BridgeClient;
 //!
-//! # async fn example() -> Result<(), ghidrai::error::Result<()>> {
+//! # async fn example() -> ghidrai::error::Result<()> {
 //! let client = BridgeClient::new(12345);
 //! let functions = client.list_functions().await?;
 //! # Ok(())
@@ -33,7 +33,7 @@
 //! | [`tui`] | Terminal UI workspace (ratatui + crossterm) |
 //! | [`daemon`] | Background daemon with Unix socket IPC |
 //! | [`mcp`] | Model Context Protocol server (JSON-RPC 2.0) |
-//! | [`toolkit`] | Native Rust RE tools (binwalk, checksec, rizin, ROP) |
+//! | [`toolkit`] | Native Rust RE tools and external adapters (binwalk, checksec, CWE triage, entropy, GDB/GDB-MI, memory triage, rizin, ROP) |
 //! | [`adapter`] | Backend abstraction layer (schema, process runner) |
 //! | [`types`] | Shared data types (CFG, call graph, symbols, etc.) |
 //! | [`setup`] | Ghidra installation and auto-setup |

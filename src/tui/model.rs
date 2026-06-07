@@ -4,6 +4,7 @@ pub enum AppTab {
     Decompiler,
     XRefs,
     Strings,
+    #[allow(clippy::upper_case_acronyms)]
     ROP,
     Firmware,
     Findings,

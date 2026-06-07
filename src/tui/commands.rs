@@ -2,7 +2,21 @@ pub const ROOT_COMMANDS: &[&str] = &[
     "info", "toolkit", "analyze", "bridge", "query", "clear", "quit", "help", "setup", "mcp",
 ];
 
-pub const TOOLKIT_COMMANDS: &[&str] = &["binwalk", "checksec", "rizin", "rop"];
+pub const TOOLKIT_COMMANDS: &[&str] = &[
+    "all",
+    "binwalk",
+    "checksec",
+    "cwe",
+    "disasm",
+    "entropy",
+    "gdb",
+    "gdb-mi",
+    "lief",
+    "rizin",
+    "rop",
+    "strings",
+    "volatility",
+];
 
 pub const QUERY_COMMANDS: &[&str] = &[
     "ping",
@@ -120,12 +134,25 @@ mod tests {
 
     #[test]
     fn suggests_toolkit_subcommands() {
+        assert_eq!(suggestions("toolkit a"), vec!["all".to_string()]);
         assert_eq!(suggestions("toolkit b"), vec!["binwalk".to_string()]);
-        assert_eq!(suggestions("toolkit c"), vec!["checksec".to_string()]);
+        assert_eq!(
+            suggestions("toolkit c"),
+            vec!["checksec".to_string(), "cwe".to_string()]
+        );
+        assert_eq!(suggestions("toolkit d"), vec!["disasm".to_string()]);
+        assert_eq!(suggestions("toolkit e"), vec!["entropy".to_string()]);
+        assert_eq!(
+            suggestions("toolkit g"),
+            vec!["gdb".to_string(), "gdb-mi".to_string()]
+        );
+        assert_eq!(suggestions("toolkit l"), vec!["lief".to_string()]);
         assert_eq!(
             suggestions("toolkit r"),
             vec!["rizin".to_string(), "rop".to_string()]
         );
+        assert_eq!(suggestions("toolkit s"), vec!["strings".to_string()]);
+        assert_eq!(suggestions("toolkit v"), vec!["volatility".to_string()]);
     }
 
     #[test]

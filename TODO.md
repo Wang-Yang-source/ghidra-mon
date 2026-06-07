@@ -59,21 +59,28 @@
 - [x] Rizin/Radare2：优先使用 `-q0`、`cmdj`、`pdfj`、`aflj`、`izzj`、`iSj`、`iij`、`axtj` 等 JSON 命令。
 - [x] Ghidra headless/bridge：复用现有 JSON bridge，输出统一映射到内部模型。
 - [x] Binwalk：优先接入仓库内 Rust binwalk 库或其 JSON 输出路径，避免解析表格文本。
-- [ ] Volatility 3：优先使用 `--renderer json`。
-- [ ] LIEF：优先通过 Rust/Python API 包一层本地 CLI，直接输出项目定义的 JSON schema。
+- [x] Native strings：纯 Rust ASCII/UTF-8 字符串扫描，已接入 `ghidrai toolkit strings`。
+- [x] Native disasm：基于 `goblin` + `iced-x86` 的 ELF/PE `.text` 反汇编，已接入 `ghidrai toolkit disasm`。
+- [x] Native entropy triage：已接入 `ghidrai toolkit entropy`，基于 Shannon entropy 输出全文件/段级熵分析和 packer/compression Finding。
+- [x] Native Volatility-style triage：已接入 `ghidrai toolkit volatility`，对 memory dump/blob 做基础元信息、内嵌 ELF/PE 标记和 IOC 字符串扫描。
+- [ ] Volatility 3：后续作为外部 adapter 接 `--renderer json`，与 native memory/blob triage 共存。
+- [x] LIEF-style object inspection：先用 Rust `goblin` 接入 `ghidrai toolkit lief`，输出 binary info、sections、symbols、imports、exports；后续如需写操作再接真正 LIEF API。
 
 ### P1：文本输出可控但需要 adapter 隔离
 
 - [x] checksec：使用自有 Rust ELF 安全特性检测实现，输出统一 SecurityFeature 事件。
 - [ ] ROPgadget/ROPper：当前 ROP adapter 基于 iced-x86 纯 Rust 实现，不依赖外部 ROPgadget 工具。如需接入上游 ROPgadget，需新增一个外部工具 adapter 并用版本锁定文本 parser。
-- [ ] GDB + GEF/Pwndbg：优先使用 GDB/MI 或 Python API，不直接解析彩色 TUI 输出。
+- [x] GDB batch metadata：已接入 `ghidrai toolkit gdb`，通过非交互 batch 命令提取入口点、段和函数符号，解析器版本锁定为 `gdb-batch-v1`。
+- [x] GDB/MI metadata：已接入 `ghidrai toolkit gdb-mi`，通过 `--interpreter=mi3` 和 MI stdin 驱动只读文件/符号信息查询，解析器版本锁定为 `gdb-mi-v1`。
+- [ ] GDB/MI interactive + GEF/Pwndbg：后续接入断点、寄存器、栈、内存、单步和 attach；优先使用 GDB/MI 或 Python API，不直接解析彩色 TUI 输出。
 - [ ] Frida-tools：优先使用自定义 Frida JS agent 输出 NDJSON，而不是解析 `frida-trace` 人类可读日志。
 
 ### P2：高级能力，需要任务沙箱和结果缓存
 
 - [ ] Angr：封装成独立 worker，输入起点、目标点、约束和超时，输出 JSON 结果。
 - [ ] Unicorn：封装 CPU 模拟任务，输入架构、寄存器、内存映射和代码片段，输出寄存器/内存 diff。
-- [ ] CWE_Checker：调研可用输出格式；如果只能文本输出，先作为报告面板接入，结构化解析延后。
+- [x] Native CWE triage：已接入 `ghidrai toolkit cwe`，基于 imports、checksec、strings 汇总 CWE-style `Finding` 事件。
+- [ ] CWE_Checker：调研可用输出格式；如果只能文本输出，作为独立外部 adapter 接入并与 native CWE triage 共存。
 
 ## 子进程与任务系统
 
@@ -91,7 +98,7 @@
   - [x] Strings（字符串表 + 详情）
   - [x] Toolkit（adapter 说明面板）
   - [x] Overview（二进制摘要 + ASCII 火焰渐变 banner + 格式/架构/段信息）
-  - [ ] Disasm（交互式反汇编视图，不依赖 Ghidra bridge）
+- [ ] Disasm（交互式反汇编视图，不依赖 Ghidra bridge；CLI 原生 adapter 已接入）
   - [ ] Debug（GDB/Frida 动态调试面板）
   - [x] ROP（gadget 列表面板框架，待接入 adapter 事件流）
   - [x] Firmware（Binwalk 扫描结果面板框架，待接入 adapter 事件流）
@@ -113,8 +120,8 @@
 
 ## 新增：技术债务与改进项
 
-- [ ] ROP adapter 硬编码 64 位 x86（`bitness = 64`），应支持 32 位和 ARM。
-- [ ] checksec adapter 仅支持 ELF；PE 和 Mach-O 目前返回错误。
+- [x] ROP adapter 已能从 ELF/PE 头自动识别 32/64 位 x86，并按 ELF 可执行 LOAD 段 / PE 可执行 section 输出虚拟地址；ARM 仍待接入。
+- [x] checksec adapter 已支持 ELF、PE、Mach-O 基础保护项检测。
 - [ ] Rizin adapter 依赖外部 `rizin` 二进制，未做版本检测和降级策略。
 - [ ] `ToolProcessLimits` 仅在 Rizin adapter 中使用，binwalk/checksec/rop adapter 不受资源限制保护。
 - [ ] TUI 控制台通过 spawn 自身 CLI 执行命令（`current_exe()`），会在 TUI 内递归启动子进程；工具类命令应直接在 TUI 进程内调用 adapter。
@@ -127,8 +134,14 @@
 - [x] 为每个 adapter 保存真实工具输出样本，做 golden tests。现有测试覆盖：
   - Binwalk: fixture 测试（`third_party/binwalk/tests/inputs/png_malformed.bin`）
   - Checksec: `tests/crackme` ELF fixture
+  - Native CWE triage: `tests/crackme` ELF fixture
+  - Native entropy triage: `tests/crackme` ELF fixture + entropy math 单元测试
+  - LIEF-style object inspection: `tests/crackme` ELF fixture
   - ROP: `tests/crackme` gadget scan
   - Rizin: 内联 JSON 单元测试
+  - Native Volatility-style triage: `tests/crackme` blob fixture
+  - GDB batch metadata: 内联 batch 输出单元测试
+  - GDB/MI metadata: 内联 MI transcript 单元测试
   - Ghidra adapter: 内联 JSON 单元测试
   - Process runner: stdout/stderr/timeout/cancel 测试
   - TUI events: structured/raw view 过滤测试
@@ -144,7 +157,7 @@
 2. [x] 接入 Rizin JSON adapter，完成函数列表、反汇编、字符串、xref 四个基础视图。
 3. [x] 把现有 Ghidra bridge 输出映射到同一数据模型。
 4. [x] 接入 binwalk 固件扫描，优先使用结构化库/API。
-5. [ ] 接入 ROPgadget，先提供原始输出面板，再逐步结构化 gadget 列表。（注：当前已有纯 Rust ROP adapter，但功能有限——仅 64-bit、无链构造、无外部 ROPgadget 集成）
+5. [ ] 接入 ROPgadget，先提供原始输出面板，再逐步结构化 gadget 列表。（注：当前已有纯 Rust ROP adapter，支持 x86/x86-64 ELF/PE 可执行区域扫描和虚拟地址输出，但仍无链构造、ARM 或外部 ROPgadget 集成）
 6. [x] 增加 adapter fixtures 和 golden tests，锁定解析行为。
 7. [x] 在 TUI 中加入"结构化/原始输出"双视图和解析错误提示。
 

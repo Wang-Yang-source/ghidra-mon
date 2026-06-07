@@ -46,6 +46,7 @@ pub enum ToolEventKind {
     Gadget,
     FirmwareEntry,
     BinaryInfo,
+    MemoryRegion,
     Function,
     Instruction,
     Xref,
@@ -155,6 +156,17 @@ pub struct MemoryProcess {
     pub name: String,
     pub parent_pid: Option<u32>,
     pub image_path: Option<String>,
+    #[serde(default)]
+    pub extra: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryRegion {
+    pub address: Option<String>,
+    pub offset: u64,
+    pub size: u64,
+    pub label: String,
+    pub permissions: Option<String>,
     #[serde(default)]
     pub extra: serde_json::Value,
 }

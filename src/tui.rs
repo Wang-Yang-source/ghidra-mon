@@ -65,10 +65,7 @@ fn themed_block(title: &str, focused: bool) -> Block<'_> {
         theme::border_dim()
     };
     Block::default()
-        .title(Span::styled(
-            format!(" {} ", title),
-            theme::title(),
-        ))
+        .title(Span::styled(format!(" {} ", title), theme::title()))
         .borders(Borders::ALL)
         .border_style(border_style)
 }
@@ -152,7 +149,7 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
             )));
             st.logs.push(events::event_line(ToolEvent::status(
                 "tui",
-                "try: info <bin>, toolkit binwalk <bin>, toolkit checksec <bin>, toolkit rop <bin>",
+                "try: info <bin>, toolkit gdb <bin>, toolkit cwe <bin>, toolkit rop <bin>",
             )));
         }
     }
@@ -246,10 +243,11 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
         // Collect overview data from recent info logs
         if app_tab == AppTab::Overview && overview_lines.is_empty() {
             for log in &st.logs {
-                if let Ok(ev) = serde_json::from_str::<ToolEvent>(log) {
-                    if ev.adapter == "local" && ev.message.contains(':') {
-                        overview_lines.push(ev.message.clone());
-                    }
+                if let Ok(ev) = serde_json::from_str::<ToolEvent>(log)
+                    && ev.adapter == "local"
+                    && ev.message.contains(':')
+                {
+                    overview_lines.push(ev.message.clone());
                 }
             }
         }
@@ -458,19 +456,28 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                         &[
                             "Security findings from all adapters.",
                             "",
-                            "checksec, CWE_checker, and custom rules",
+                            "checksec, native CWE triage, CWE_Checker, and custom rules",
                             "will populate findings here.",
                             "",
-                            "Run: toolkit checksec <binary>",
+                            "Run: toolkit cwe <binary>",
                         ],
                     );
                 }
                 AppTab::Toolkit => {
                     let tools = [
                         ("info <bin>",              "binary format and section summary"),
+                        ("toolkit all <bin>",        "run native toolkit passes together"),
                         ("toolkit binwalk <bin>",    "firmware signatures and embedded structures"),
-                        ("toolkit checksec <bin>",   "ELF hardening features"),
+                        ("toolkit checksec <bin>",   "ELF/PE/Mach-O hardening features"),
+                        ("toolkit cwe <bin>",        "CWE-style risk findings"),
+                        ("toolkit lief <bin>",       "object sections, symbols, imports, exports"),
+                        ("toolkit strings <bin>",    "native ASCII/UTF-8 string extraction"),
+                        ("toolkit disasm <bin>",     "native x86/x86-64 disassembly"),
+                        ("toolkit entropy <bin>",    "entropy and packer/compression hints"),
+                        ("toolkit gdb <bin>",        "GDB batch debugger metadata"),
+                        ("toolkit gdb-mi <bin>",     "GDB/MI protocol metadata"),
                         ("toolkit rop <bin>",        "ROP gadget discovery"),
+                        ("toolkit volatility <dump>", "memory/blob IOC triage"),
                         ("toolkit rizin <bin>",      "Rizin JSON static analysis"),
                         ("analyze <bin> ...",        "import into the Ghidra backend adapter"),
                         ("bridge ...",               "start the Ghidra backend adapter"),
@@ -640,26 +647,22 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                         KeyCode::Char('x') if active_pane != ActivePane::Input => {
                             app_tab = AppTab::XRefs;
                             // Trigger xrefs fetch for current selected function
-                            if let Some(i) = list_state.selected() {
-                                if let Some(func) = functions.get(i) {
-                                    let func_name = func.name.clone();
-                                    let tx = tx_xrefs.clone();
-                                    let port = bridge_port;
-                                    tokio::spawn(async move {
-                                        if let Some(p) = port {
-                                            let client = BridgeClient::new(p);
-                                            let callers = client
-                                                .callers(&func_name)
-                                                .await
-                                                .unwrap_or_default();
-                                            let callees = client
-                                                .callees(&func_name)
-                                                .await
-                                                .unwrap_or_default();
-                                            let _ = tx.send((callers, callees)).await;
-                                        }
-                                    });
-                                }
+                            if let Some(i) = list_state.selected()
+                                && let Some(func) = functions.get(i)
+                            {
+                                let func_name = func.name.clone();
+                                let tx = tx_xrefs.clone();
+                                let port = bridge_port;
+                                tokio::spawn(async move {
+                                    if let Some(p) = port {
+                                        let client = BridgeClient::new(p);
+                                        let callers =
+                                            client.callers(&func_name).await.unwrap_or_default();
+                                        let callees =
+                                            client.callees(&func_name).await.unwrap_or_default();
+                                        let _ = tx.send((callers, callees)).await;
+                                    }
+                                });
                             }
                         }
                         KeyCode::Char('s') if active_pane != ActivePane::Input => {
@@ -736,48 +739,43 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
 
                         // ── Execution ───────────────────────────────
                         KeyCode::Enter if active_pane == ActivePane::Sidebar => {
-                            if app_tab == AppTab::Decompiler || app_tab == AppTab::XRefs || app_tab == AppTab::Overview {
-                                if let Some(i) = list_state.selected() {
-                                    if let Some(func) = functions.get(i) {
-                                        let func_name = func.name.clone();
+                            if (app_tab == AppTab::Decompiler
+                                || app_tab == AppTab::XRefs
+                                || app_tab == AppTab::Overview)
+                                && let Some(i) = list_state.selected()
+                                && let Some(func) = functions.get(i)
+                            {
+                                let func_name = func.name.clone();
 
-                                        // Fetch Decompile
-                                        let tx_dec = tx_decompile.clone();
-                                        let port = bridge_port;
-                                        decompiled_code = format!("Decompiling {}...", func_name);
-                                        let func_name_dec = func_name.clone();
-                                        tokio::spawn(async move {
-                                            if let Some(p) = port {
-                                                let client = BridgeClient::new(p);
-                                                if let Ok(res) =
-                                                    client.decompile(&func_name_dec).await
-                                                {
-                                                    if let Some(c_code) = res.c_code {
-                                                        let _ = tx_dec.send(c_code).await;
-                                                    }
-                                                }
-                                            }
-                                        });
-
-                                        // Fetch XRefs
-                                        let tx_x = tx_xrefs.clone();
-                                        let func_name2 = func_name.clone();
-                                        tokio::spawn(async move {
-                                            if let Some(p) = port {
-                                                let client = BridgeClient::new(p);
-                                                let callers = client
-                                                    .callers(&func_name2)
-                                                    .await
-                                                    .unwrap_or_default();
-                                                let callees = client
-                                                    .callees(&func_name2)
-                                                    .await
-                                                    .unwrap_or_default();
-                                                let _ = tx_x.send((callers, callees)).await;
-                                            }
-                                        });
+                                // Fetch Decompile
+                                let tx_dec = tx_decompile.clone();
+                                let port = bridge_port;
+                                decompiled_code = format!("Decompiling {}...", func_name);
+                                let func_name_dec = func_name.clone();
+                                tokio::spawn(async move {
+                                    if let Some(p) = port {
+                                        let client = BridgeClient::new(p);
+                                        if let Ok(res) = client.decompile(&func_name_dec).await
+                                            && let Some(c_code) = res.c_code
+                                        {
+                                            let _ = tx_dec.send(c_code).await;
+                                        }
                                     }
-                                }
+                                });
+
+                                // Fetch XRefs
+                                let tx_x = tx_xrefs.clone();
+                                let func_name2 = func_name.clone();
+                                tokio::spawn(async move {
+                                    if let Some(p) = port {
+                                        let client = BridgeClient::new(p);
+                                        let callers =
+                                            client.callers(&func_name2).await.unwrap_or_default();
+                                        let callees =
+                                            client.callees(&func_name2).await.unwrap_or_default();
+                                        let _ = tx_x.send((callers, callees)).await;
+                                    }
+                                });
                             }
                         }
 
@@ -792,21 +790,19 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                             history_index = None;
                             history_search_prefix.clear();
                         }
-                        KeyCode::Up if active_pane == ActivePane::Input => {
-                            if !command_history.is_empty() {
-                                if history_index.is_none() {
-                                    history_search_prefix = input.clone();
-                                }
-                                let mut start_idx = history_index.unwrap_or(command_history.len());
-                                while start_idx > 0 {
-                                    start_idx -= 1;
-                                    if command_history[start_idx]
-                                        .starts_with(&history_search_prefix)
-                                    {
-                                        history_index = Some(start_idx);
-                                        input = command_history[start_idx].clone();
-                                        break;
-                                    }
+                        KeyCode::Up
+                            if active_pane == ActivePane::Input && !command_history.is_empty() =>
+                        {
+                            if history_index.is_none() {
+                                history_search_prefix = input.clone();
+                            }
+                            let mut start_idx = history_index.unwrap_or(command_history.len());
+                            while start_idx > 0 {
+                                start_idx -= 1;
+                                if command_history[start_idx].starts_with(&history_search_prefix) {
+                                    history_index = Some(start_idx);
+                                    input = command_history[start_idx].clone();
+                                    break;
                                 }
                             }
                         }
@@ -845,7 +841,8 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
 
                                 // If `info` command, also update overview
                                 if cmd.starts_with("info ") {
-                                    let target = cmd.strip_prefix("info ").unwrap_or("").trim().to_string();
+                                    let target =
+                                        cmd.strip_prefix("info ").unwrap_or("").trim().to_string();
                                     overview_lines = binary_info::scan_binary_info(&target);
                                 }
 
@@ -863,18 +860,20 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
 
                     // ── Click on Tab Bar → switch tab ────────────────
                     if tab_area.contains(pos) {
-                        match mouse.kind {
-                            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                                // Compute which tab was clicked based on horizontal position
-                                let inner_x = mouse.column.saturating_sub(tab_area.x + 1); // skip border
-                                let inner_w = tab_area.width.saturating_sub(2).max(1);
-                                let tab_count = AppTab::ALL.len() as u16;
-                                let tab_idx = ((inner_x as u32 * tab_count as u32) / inner_w as u32) as usize;
-                                if let Some(clicked_tab) = AppTab::ALL.get(tab_idx.min(AppTab::ALL.len() - 1)) {
-                                    app_tab = *clicked_tab;
-                                }
+                        if let MouseEventKind::Down(crossterm::event::MouseButton::Left) =
+                            mouse.kind
+                        {
+                            // Compute which tab was clicked based on horizontal position
+                            let inner_x = mouse.column.saturating_sub(tab_area.x + 1); // skip border
+                            let inner_w = tab_area.width.saturating_sub(2).max(1);
+                            let tab_count = AppTab::ALL.len() as u16;
+                            let tab_idx =
+                                ((inner_x as u32 * tab_count as u32) / inner_w as u32) as usize;
+                            if let Some(clicked_tab) =
+                                AppTab::ALL.get(tab_idx.min(AppTab::ALL.len() - 1))
+                            {
+                                app_tab = *clicked_tab;
                             }
-                            _ => {}
                         }
                     }
                     // ── Click / scroll in Sidebar ────────────────────
@@ -883,7 +882,8 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
                                 active_pane = ActivePane::Sidebar;
                                 // Calculate which list item was clicked
-                                let row_in_list = mouse.row.saturating_sub(sidebar_area.y + 1) as usize; // +1 for border
+                                let row_in_list =
+                                    mouse.row.saturating_sub(sidebar_area.y + 1) as usize; // +1 for border
                                 if app_tab == AppTab::Strings {
                                     let offset = strings_list_state.offset();
                                     let clicked = offset + row_in_list;
@@ -900,15 +900,17 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                                             let func_name = func.name.clone();
                                             let tx_dec = tx_decompile.clone();
                                             let port = bridge_port;
-                                            decompiled_code = format!("Decompiling {}...", func_name);
+                                            decompiled_code =
+                                                format!("Decompiling {}...", func_name);
                                             let func_name_dec = func_name.clone();
                                             tokio::spawn(async move {
                                                 if let Some(p) = port {
                                                     let client = BridgeClient::new(p);
-                                                    if let Ok(res) = client.decompile(&func_name_dec).await {
-                                                        if let Some(c_code) = res.c_code {
-                                                            let _ = tx_dec.send(c_code).await;
-                                                        }
+                                                    if let Ok(res) =
+                                                        client.decompile(&func_name_dec).await
+                                                        && let Some(c_code) = res.c_code
+                                                    {
+                                                        let _ = tx_dec.send(c_code).await;
                                                     }
                                                 }
                                             });
@@ -917,8 +919,14 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                                             tokio::spawn(async move {
                                                 if let Some(p) = port {
                                                     let client = BridgeClient::new(p);
-                                                    let callers = client.callers(&func_name2).await.unwrap_or_default();
-                                                    let callees = client.callees(&func_name2).await.unwrap_or_default();
+                                                    let callers = client
+                                                        .callers(&func_name2)
+                                                        .await
+                                                        .unwrap_or_default();
+                                                    let callees = client
+                                                        .callees(&func_name2)
+                                                        .await
+                                                        .unwrap_or_default();
                                                     let _ = tx_x.send((callers, callees)).await;
                                                 }
                                             });
@@ -989,14 +997,12 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                         }
                     }
                     // ── Click on Log Area → toggle event view ────────
-                    else if log_area.contains(pos) {
-                        match mouse.kind {
-                            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                                // Double-purpose: click log area to toggle view
-                                event_view = event_view.toggle();
-                            }
-                            _ => {}
-                        }
+                    else if log_area.contains(pos)
+                        && let MouseEventKind::Down(crossterm::event::MouseButton::Left) =
+                            mouse.kind
+                    {
+                        // Double-purpose: click log area to toggle view
+                        event_view = event_view.toggle();
                     }
                 }
                 _ => {}
@@ -1041,6 +1047,7 @@ fn render_sidebar_functions(
 }
 
 /// Render the Overview tab — shows the ASCII banner + binary summary.
+#[allow(clippy::too_many_arguments)]
 fn render_overview(
     f: &mut ratatui::Frame,
     sidebar_area: ratatui::layout::Rect,
@@ -1138,7 +1145,9 @@ fn render_placeholder(
                 // Indented lines are commands — highlight them
                 Line::from(Span::styled(
                     *line,
-                    Style::default().fg(theme::AMBER).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(theme::AMBER)
+                        .add_modifier(Modifier::BOLD),
                 ))
             } else if line.starts_with('[') {
                 // Severity tags
