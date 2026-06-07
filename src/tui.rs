@@ -580,8 +580,9 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
             let cursor_phase = ((tick % 20) as f32) / 20.0;
             let cursor_color = theme::lerp_color(theme::ORANGE, theme::SOLAR, cursor_phase);
 
+            let prompt_str = if console_focused { ":" } else { "❯ " };
             let line = Line::from(vec![
-                Span::styled("❯ ", theme::prompt()),
+                Span::styled(prompt_str, theme::prompt()),
                 Span::styled(input.clone(), theme::input_text()),
                 Span::styled(ghost_text.clone(), theme::ghost()),
                 Span::styled("█", Style::default().fg(cursor_color)),
@@ -604,7 +605,11 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                     }
                     match key.code {
                         KeyCode::Esc => {
-                            // Focus input instead of quitting
+                            if active_pane == ActivePane::Input {
+                                active_pane = ActivePane::Sidebar;
+                            }
+                        }
+                        KeyCode::Char(':') if active_pane != ActivePane::Input => {
                             active_pane = ActivePane::Input;
                         }
                         KeyCode::Char('c') | KeyCode::Char('q')
@@ -863,16 +868,21 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                         if let MouseEventKind::Down(crossterm::event::MouseButton::Left) =
                             mouse.kind
                         {
-                            // Compute which tab was clicked based on horizontal position
-                            let inner_x = mouse.column.saturating_sub(tab_area.x + 1); // skip border
-                            let inner_w = tab_area.width.saturating_sub(2).max(1);
-                            let tab_count = AppTab::ALL.len() as u16;
-                            let tab_idx =
-                                ((inner_x as u32 * tab_count as u32) / inner_w as u32) as usize;
-                            if let Some(clicked_tab) =
-                                AppTab::ALL.get(tab_idx.min(AppTab::ALL.len() - 1))
-                            {
-                                app_tab = *clicked_tab;
+                            if mouse.row == tab_area.y + 1 {
+                                let inner_x = mouse.column.saturating_sub(tab_area.x + 1); // skip border
+                                let mut current_x = 0;
+                                let mut clicked_tab = None;
+                                for tab in AppTab::ALL {
+                                    let width = tab.label().chars().count() as u16;
+                                    if inner_x >= current_x && inner_x < current_x + width {
+                                        clicked_tab = Some(tab);
+                                        break;
+                                    }
+                                    current_x += width + 1; // +1 for the divider "│"
+                                }
+                                if let Some(tab) = clicked_tab {
+                                    app_tab = *tab;
+                                }
                             }
                         }
                     }
@@ -881,55 +891,56 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                         match mouse.kind {
                             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
                                 active_pane = ActivePane::Sidebar;
-                                // Calculate which list item was clicked
-                                let row_in_list =
-                                    mouse.row.saturating_sub(sidebar_area.y + 1) as usize; // +1 for border
-                                if app_tab == AppTab::Strings {
-                                    let offset = strings_list_state.offset();
-                                    let clicked = offset + row_in_list;
-                                    if clicked < strings.len() {
-                                        strings_list_state.select(Some(clicked));
-                                    }
-                                } else {
-                                    let offset = list_state.offset();
-                                    let clicked = offset + row_in_list;
-                                    if clicked < functions.len() {
-                                        list_state.select(Some(clicked));
-                                        // Auto-trigger decompile + xrefs on click
-                                        if let Some(func) = functions.get(clicked) {
-                                            let func_name = func.name.clone();
-                                            let tx_dec = tx_decompile.clone();
-                                            let port = bridge_port;
-                                            decompiled_code =
-                                                format!("Decompiling {}...", func_name);
-                                            let func_name_dec = func_name.clone();
-                                            tokio::spawn(async move {
-                                                if let Some(p) = port {
-                                                    let client = BridgeClient::new(p);
-                                                    if let Ok(res) =
-                                                        client.decompile(&func_name_dec).await
-                                                        && let Some(c_code) = res.c_code
-                                                    {
-                                                        let _ = tx_dec.send(c_code).await;
+                                // Calculate which list item was clicked (avoiding borders)
+                                if mouse.row > sidebar_area.y && mouse.row < sidebar_area.y + sidebar_area.height.saturating_sub(1) {
+                                    let row_in_list = (mouse.row - sidebar_area.y - 1) as usize;
+                                    if app_tab == AppTab::Strings {
+                                        let offset = strings_list_state.offset();
+                                        let clicked = offset + row_in_list;
+                                        if clicked < strings.len() {
+                                            strings_list_state.select(Some(clicked));
+                                        }
+                                    } else {
+                                        let offset = list_state.offset();
+                                        let clicked = offset + row_in_list;
+                                        if clicked < functions.len() {
+                                            list_state.select(Some(clicked));
+                                            // Auto-trigger decompile + xrefs on click
+                                            if let Some(func) = functions.get(clicked) {
+                                                let func_name = func.name.clone();
+                                                let tx_dec = tx_decompile.clone();
+                                                let port = bridge_port;
+                                                decompiled_code =
+                                                    format!("Decompiling {}...", func_name);
+                                                let func_name_dec = func_name.clone();
+                                                tokio::spawn(async move {
+                                                    if let Some(p) = port {
+                                                        let client = BridgeClient::new(p);
+                                                        if let Ok(res) =
+                                                            client.decompile(&func_name_dec).await
+                                                            && let Some(c_code) = res.c_code
+                                                        {
+                                                            let _ = tx_dec.send(c_code).await;
+                                                        }
                                                     }
-                                                }
-                                            });
-                                            let tx_x = tx_xrefs.clone();
-                                            let func_name2 = func_name.clone();
-                                            tokio::spawn(async move {
-                                                if let Some(p) = port {
-                                                    let client = BridgeClient::new(p);
-                                                    let callers = client
-                                                        .callers(&func_name2)
-                                                        .await
-                                                        .unwrap_or_default();
-                                                    let callees = client
-                                                        .callees(&func_name2)
-                                                        .await
-                                                        .unwrap_or_default();
-                                                    let _ = tx_x.send((callers, callees)).await;
-                                                }
-                                            });
+                                                });
+                                                let tx_x = tx_xrefs.clone();
+                                                let func_name2 = func_name.clone();
+                                                tokio::spawn(async move {
+                                                    if let Some(p) = port {
+                                                        let client = BridgeClient::new(p);
+                                                        let callers = client
+                                                            .callers(&func_name2)
+                                                            .await
+                                                            .unwrap_or_default();
+                                                        let callees = client
+                                                            .callees(&func_name2)
+                                                            .await
+                                                            .unwrap_or_default();
+                                                        let _ = tx_x.send((callers, callees)).await;
+                                                    }
+                                                });
+                                            }
                                         }
                                     }
                                 }
