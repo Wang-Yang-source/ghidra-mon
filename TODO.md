@@ -105,6 +105,7 @@
   - [ ] Memory（Volatility 内存取证视图）
   - [x] Findings/Logs（独立 Findings 面板 + 严重级过滤侧栏）
   - [ ] Call Graph（函数调用图面板：提供层次化的调用关系结构树与快速跳转，基于 GhidraMCP `generate_call_graph` 思路，重点实现！）
+  - [ ] Graph Overview（全局概览图：提供高视角的模块、系统调用与核心函数群组的交互全景图，重点实现！）
 - [x] 支持快捷键在函数列表、反汇编、伪代码、引用、日志之间跳转。（`o/d/x/s/r/f/g/t` 切 Tab，`↑↓` 导航，`Enter` 反编译选中函数，`Tab/BackTab` 三区焦点轮换，`v` 切换事件视图）
 - [ ] 每个面板显示数据来源工具、命令行、运行耗时和解析状态。当前 `ToolEvent.adapter` 有来源信息，但面板标题未动态展示工具名和耗时。
 - [x] 结构化视图和原始输出视图可一键切换。（`v` 键切换 `EventView::Structured` / `EventView::Raw`）
@@ -162,6 +163,7 @@
 6. [x] 增加 adapter fixtures 和 golden tests，锁定解析行为。
 7. [x] 在 TUI 中加入"结构化/原始输出"双视图和解析错误提示。
 8. [ ] 重点实现：Function Call Graph（函数调用图）数据提取与 TUI 可视化呈现。
+9. [ ] 重点实现：Graph Overview（全局概览图），提供更宏观的控制流/模块级交互视图。
 
 ## 明确不做
 

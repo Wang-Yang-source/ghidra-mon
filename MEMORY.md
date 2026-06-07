@@ -55,6 +55,7 @@ Do not frame `rz-ghidra` versus LIEF as a single either/or choice. They own diff
 - Hover/context popups should explain registers, addresses, stack values, constants, imports, and suspicious APIs in place.
 - Variable and register selection should trigger instant data-flow/taint highlighting across upstream and downstream uses.
 - Function Call Graph (CG): A hierarchical, interactive call graph is a high-priority structural view. Users must be able to explore callers and callees rapidly to understand execution paths and business logic.
+- Graph Overview: Beyond single-function CFGs or CGs, a macro-level Graph Overview is crucial. It visualizes the entire system architecture, showing interactions between major modules, entry points, system calls, and core function clusters to give analysts an immediate "big picture" of the binary.
 - AI is part of the rendering pipeline, not just a chat box. It should propose function names, variable names, risk summaries, behavior explanations, and next actions inline.
 - AI suggestions must be visually distinct and reversible. Example: render `sub_401100(a1, a2)` with a muted suggestion like `init_network_socket(ip, port)` and allow one-key adoption.
 
