@@ -27,7 +27,9 @@ Ghidrai = Ghidra + AI + TUI. The project is a terminal-first reverse engineering
 ## Backend Strategy
 
 - Decompilation backend: prioritize the existing Ghidra bridge/headless path for high-quality decompilation, symbols, xrefs, and CFG data.
-- Terminal-native decompilation candidate: evaluate `rz-ghidra` through the Rizin adapter as an optional decompiler path, especially when it can provide structured output cleanly.
+- Binary Ninja IL integration: Explore leveraging/emulating Binja's MLIL/HLIL concepts to present clear data-flow paths and type propagation alongside standard decompilation.
+- IDA Lumina/FLIRT parity: Implement or integrate fast signature matching (like FLIRT or Lumina) to quickly identify and hide standard library functions, reducing cognitive load.
+- Terminal-native decompilation candidate: evaluate `rz-ghidra` through the Rizin adapter as an optional decompiler path.
 - Binary/object parsing backend: use Rust-native `goblin` where it is enough; add LIEF or LIEF-backed FFI/bindings when richer ELF/PE/Mach-O parsing or modification is needed.
 - Disassembly/gadget scanning: prefer native Rust or structured engine APIs where practical; Capstone/Keystone may be integrated through FFI if they provide better architecture coverage or assembly support.
 - Dynamic analysis: start with read-only GDB batch metadata and GDB/MI metadata for entry points, sections, and symbols; use GDB/MI, Frida agents emitting NDJSON, and isolated worker tasks for real debugging. Do not parse colorful debugger TUI output.
@@ -51,7 +53,7 @@ Do not frame `rz-ghidra` versus LIEF as a single either/or choice. They own diff
 ## UX Targets
 
 - Main layout: left navigation tree for functions/imports/exports/strings, wide center workspace for decompile/disasm/CFG, side or bottom panels for findings, logs, and task status.
-- CFG in terminal should use readable line drawing or braille-style rendering when useful, but clarity beats decoration.
+- Interactive Graphs (IDA-style): CFG and Call Graphs in the terminal should not be static. They must be interactive—allowing node collapsing, coloring, and rapid keyboard navigation between basic blocks or function hierarchies.
 - Hover/context popups should explain registers, addresses, stack values, constants, imports, and suspicious APIs in place.
 - Variable and register selection should trigger instant data-flow/taint highlighting across upstream and downstream uses.
 - Function Call Graph (CG): A hierarchical, interactive call graph is a high-priority structural view. Users must be able to explore callers and callees rapidly to understand execution paths and business logic.
