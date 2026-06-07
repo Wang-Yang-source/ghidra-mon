@@ -48,180 +48,95 @@ GhidrAI 是一个面向 AI 时代的 TUI 逆向工作台。
 
 ## 设计哲学
 
-- 终端优先：所有核心能力必须能在 Linux CLI/TUI 环境中运行，不能依赖 GUI。
-- 工具合集优先：项目中心是统一逆向工作台，不是 Ghidra 自动化、MCP 服务或某个单独工具的包装。
-- 开源优先：默认集成开源工具和开源库，避免闭源 SaaS、远程必需服务和不可审计依赖。
-- 结构化优先：优先调用 JSON、NDJSON、GDB/MI、API、SQLite 或其他机器可读输出。
-- 文本兜底：不得在 UI 层到处写正则解析终端文本；纯文本工具必须通过独立 adapter 隔离。
-- 原始输出保留：每个工具的 stdout/stderr 都要能回看，结构化视图和原始视图必须并存。
-- 只读默认：分析、扫描、解包、调试 attach、patch 等高风险操作必须区分权限和确认。
-- 后端可替换：同一类能力允许多个引擎并存，例如 Ghidra/Rizin 反编译，ROPgadget/ROPper gadget 搜索。
+GhidrAI 的核心是将强大的逆向分析引擎（尤其是 Ghidra）的能力转化为终端里的可组合命令、面板和工作流。
 
-## 核心工作流
+- **不重写引擎**：不要一开始尝试用 Rust 重写 Ghidra 数百万行的 Java/C++ 代码。相反，把 Ghidra 作为 upstream engine 纳入本项目，通过 headless analyzer 抽取核心数据。
+- **快慢结合双路径**：
+  - 快速路径：使用原生 Rust 库（如 `goblin`、`memmap2`）进行秒级预分析（ELF/PE解析、字符串、符号表、熵分析）。
+  - 深度路径：调用 Ghidra Headless 进行耗时的反编译、交叉引用计算、高级图分析，并在后台运行不阻塞 UI。
+- **AI 记忆管理**：所有 AI 结论必须区分 `Fact`（已确认）、`Hypothesis`（假设）和 `Question`（疑问），用户的每一次改名和注释都应沉淀在 `.ghidrai/` 项目记忆中。
+- **终端瑞士军刀**：整合 Rizin、Radare2、Binwalk、Capstone 等工具作为特定功能的 adapter 补充。
 
-```text
-┌──────────────┐
-│  Target Bin  │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────────────────────────────────────────────────┐
-│                    Ghidrai TUI Workspace                  │
-├──────────┬──────────┬──────────┬─────────┬───────────────┤
-│ Overview │ Disasm   │ Decompile│ Xrefs   │ Strings       │
-│ Debug    │ ROP      │ Firmware │ Memory  │ Findings/Logs │
-└────┬─────┴────┬─────┴────┬─────┴────┬────┴──────┬────────┘
-     │          │          │          │           │
-     ▼          ▼          ▼          ▼           ▼
-  Ghidra     Rizin      Binwalk    ROPgadget    GDB/Frida
-  Bridge     JSON       Rust/API   Adapter      MI/NDJSON
-```
+## 核心架构与工作流
 
-TUI 层只消费 Ghidrai 的内部事件模型，不直接理解某个工具的奇怪输出格式。
-
-## 工具分层
-
-### P0: 静态分析与反编译核心
-
-| 后端 | 用途 | 集成原则 |
-|------|------|----------|
-| Ghidra headless/bridge | 高质量反编译、函数、符号、xref、CFG | 作为一个后端引擎接入，不作为产品中心 |
-| Rizin/Radare2 | 反汇编、函数列表、xref、字符串、二进制元信息 | 优先使用 `*j` JSON 命令 |
-| rz-ghidra | 终端反编译 | 作为 Rizin 反编译后端候选 |
-
-### P1: 二进制手术与漏洞利用辅助
-
-| 后端 | 用途 | 集成原则 |
-|------|------|----------|
-| checksec | PIE、RELRO、Canary、NX 等保护检测 | 使用自有 Rust ELF 检测，输出统一 SecurityFeature 事件 |
-| entropy | 熵分析、壳/压缩/加密初筛 | 使用 Rust 原生 Shannon entropy，输出段级结构化结果和 Finding |
-| ROPgadget/ROPper | gadget 搜索、ROP 链辅助 | 当前先用 Rust 原生 x86/x86-64 ELF/PE gadget 扫描；外部 ROPgadget/ROPper 后续作为可替换后端 |
-| LIEF | ELF/PE/Mach-O 解析和修改 | 优先走库 API，再封装成 Ghidrai schema |
-
-### P2: 动态分析
-
-| 后端 | 用途 | 集成原则 |
-|------|------|----------|
-| GDB | 断点、寄存器、栈、内存、单步 | 当前提供 batch metadata 和 GDB/MI metadata 入口；后续调试动作继续走 GDB/MI，不解析彩色 TUI |
-| GEF/Pwndbg | 调试增强 | 作为用户可选环境，不把其 ANSI 输出当稳定数据源 |
-| Frida | 动态插桩、函数 trace | 使用自定义 JS agent 输出 NDJSON |
-
-### P3: 固件、取证与高级分析
-
-| 后端 | 用途 | 集成原则 |
-|------|------|----------|
-| Binwalk | 固件签名扫描、解包 | 优先使用 Rust 库/API 或 JSON 路径 |
-| Volatility 3 | 内存 dump 取证 | 使用 `--renderer json` |
-| Angr | 符号执行 | 独立 worker，强制超时和资源限制 |
-| Unicorn | 指令模拟 | 独立 sandbox 任务，输出寄存器/内存 diff |
-| CWE_Checker | 二进制 CWE 扫描 | 先报告面板接入，结构化解析逐步补齐 |
-
-## 输出解析原则
-
-所有工具后端必须经过 adapter：
+GhidrAI 采用分层调度架构，完全解耦 UI、项目状态与重型分析计算：
 
 ```text
-Tool Process stdout/stderr
-        │
-        ▼
-ToolAdapter
-  - command building
-  - capability probing
-  - version detection
-  - structured parser
-  - raw log capture
-  - error classification
-        │
-        ▼
-Ghidrai Event Model
-        │
-        ▼
-TUI Panels / CLI JSON / Logs
+GhidrAI TUI
+  ↓
+Rust Core：项目管理 / TUI 渲染 / 缓存索引 / AI Memory
+  ↓
+Adapter Layer：Ghidra headless 脚本 / Rizin / Capstone / 原生解析
+  ↓
+Analysis Engines：反编译、反汇编、符号、字符串、图、调试
 ```
 
-内部模型包括：
+典型的交互流程：
+1. TUI 调用 `goblin` 秒开目标文件，展示基础段、导入导出、字符串。
+2. 后台启动 `ghidra headless analyzer` 挂载 `third_party/ghidra`。
+3. 自定义 Java/Python script 在后台抽取反编译、调用图、交叉引用，并以 JSON 格式增量流式输出。
+4. GhidrAI TUI 实时消费 JSON，将数据呈现到反编译视图、函数调用图等面板中。
 
-- `Function`
-- `Instruction`
-- `BasicBlock`
-- `Xref`
-- `StringHit`
-- `Symbol`
-- `Section`
-- `ImportExport`
-- `SecurityFeature`
-- `Gadget`
-- `FirmwareEntry`
-- `MemoryProcess`
-- `Finding`
-- `ToolLogEvent`
+## 阶段性交付路线 (MVP)
 
-## 当前命令
+- **MVP 0：项目合规与引擎纳入**
+  - 以 `third_party/ghidra` 形式引入 submodule，保留其开源许可证，搭建基础环境。
+- **MVP 1：TUI 框架与操作体系**
+  - 构建核心三栏 TUI 面板、命令面板（Command Palette）、日志系统与快捷键绑定。
+- **MVP 2：Rust 原生预分析**
+  - 不依赖 Ghidra，利用 Rust 原生库实现瞬间的文件格式识别、导出表、基础字符串和熵扫描。
+- **MVP 3：Ghidra Headless 数据桥接**
+  - 实现从 Ghidra 导出函数列表、反编译代码、交叉引用及 Call Graph 数据，结构化渲染到终端。
+- **MVP 4：AI 辅助与项目记忆 (Project Memory)**
+  - 实现本地/云端大模型接口对接，保存用户的函数重命名、注释，推断结果，并持久化到 SQLite 和 JSON 缓存中。
+- **MVP 5：瑞士军刀扩展适配器**
+  - 接入 Rizin、Radare2、GDB、Binwalk 等工具，填补内存取证、固件解包、动态调试等能力拼图。
 
-当前代码仍保留一部分 Ghidra/Revisor 历史命令，后续会逐步重命名和归并到工具合集模型中。
+## 目录结构规划
+
+```text
+ghidrai/
+├── crates/
+│   ├── ghidrai-core/          # Rust 核心：项目、任务、缓存、数据模型
+│   ├── ghidrai-tui/           # Ratatui / Crossterm TUI 界面
+│   ├── ghidrai-ai/            # AI 总结、命名、项目记忆
+│   ├── ghidrai-bridge/        # 外部工具桥接层
+│   ├── ghidrai-ghidra/        # Ghidra adapter (Headless 控制器)
+│   └── ghidrai-db/            # 索引与持久化
+│
+├── adapters/
+│   ├── ghidra/
+│   │   ├── scripts/           # Ghidra 侧的 Java/Python 解析脚本
+│   │   └── schema/            # JSON 输出协议定义
+│   ├── rizin/
+│   └── capstone/
+│
+├── third_party/
+│   └── ghidra/                # Ghidra upstream submodule
+│
+├── .ghidrai/                  # 运行时项目记忆缓存
+│   ├── project.sqlite
+│   ├── symbols.json
+│   ├── comments.md
+│   └── hypotheses.json
+│
+└── README.md
+```
+
+## 当前命令与状态
+
+目前项目仍保留早期的 CLI 工具链入口，后续将逐步重构到 `ghidrai-core` 和 `ghidrai-tui` 的全新架构中。
 
 ```bash
-# 启动 TUI，默认入口
+# 启动 TUI 工作台
 ghidrai tui
 
-# Ghidra 后端：导入和分析
-ghidrai analyze ./tests/crackme -p /tmp/ghidra_proj -n crackme
-ghidrai bridge -p /tmp/ghidra_proj -n crackme
-ghidrai query list_functions
-
-# 工具合集后端：固件/对象解析/二进制体检/熵分析/CWE 风险/内存取证/字符串/反汇编/GDB/ROP/Rizin JSON
-ghidrai toolkit binwalk ./firmware.bin
-ghidrai toolkit checksec ./tests/crackme
-ghidrai toolkit cwe ./tests/crackme
+# 原生预分析工具测试
 ghidrai toolkit lief ./tests/crackme
 ghidrai toolkit strings ./tests/crackme
-ghidrai toolkit disasm ./tests/crackme
 ghidrai toolkit entropy ./tests/crackme
-ghidrai toolkit gdb ./tests/crackme
-ghidrai toolkit gdb-mi ./tests/crackme
-ghidrai toolkit rop ./tests/crackme
-ghidrai toolkit volatility ./memory.dump
-ghidrai toolkit all ./tests/crackme --format json
-ghidrai toolkit rizin ./tests/crackme --action functions --format json
-ghidrai toolkit rizin ./tests/crackme --action disasm --query main
-```
-
-## 近期重构方向
-
-- [x] 将 README、CLI help、包描述全部从 Revisor/Ghidra 自动化切换为 Ghidrai 工具合集定位。
-- [x] 把 `toolkit` 从附属子命令提升为核心概念。
-- [x] 定义 `ToolAdapter` trait 和统一事件模型。
-- [x] 将现有 Ghidra bridge 输出映射为普通后端事件。
-- [x] 接入 Rizin JSON adapter，形成 Ghidra/Rizin 双静态分析后端。
-- [x] 给 Binwalk 和 ROP adapter 增加 fixtures/golden tests。
-- [x] 在 TUI 中实现结构化视图和原始输出视图一键切换。
-
-## 项目结构
-
-```text
-src/
-├── cli.rs              # CLI command definitions
-├── handlers.rs         # command dispatch
-├── tui.rs              # Ratatui workspace
-├── toolkit/            # native CLI toolkit integrations
-│   ├── binwalk.rs
-│   ├── checksec.rs
-│   ├── cwe.rs
-│   ├── disasm.rs
-│   ├── entropy.rs
-│   ├── gdb.rs
-│   ├── lief.rs
-│   ├── rizin.rs
-│   ├── rop.rs
-│   ├── strings.rs
-│   └── volatility.rs
-├── bridge.rs           # Ghidra backend bridge
-├── mcp.rs              # optional JSON-RPC/MCP compatibility layer
-├── setup.rs            # Ghidra backend installer
-├── types.rs            # shared data types
-└── RevisorBridge.java  # Ghidra Java bridge backend
 ```
 
 ## License
 
-GPL-3.0-or-later.
+GPL-3.0-or-later. (注：集成的第三方引擎遵循其原有协议，如 Ghidra 的 Apache-2.0)。
