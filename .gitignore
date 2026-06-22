@@ -1,4 +1,6 @@
 /target
 bridge.log
-ghidra/
-third_party/ROPgadget/
+/ghidra/
+tests/__pycache__/
+tests/complex_benchmark
+tests/guess_game

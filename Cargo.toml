@@ -1,12 +1,23 @@
 [package]
 name = "ghidrai"
-version = "0.7.5"
+version = "0.8.2"
 edition = "2024"
-description = "Open-source terminal reverse engineering TUI toolkit aggregator."
+description = "Terminal-first reverse engineering TUI toolkit with MCP server and Ghidra headless bridge integration."
 license = "GPL-3.0-or-later"
 repository = "https://github.com/Wang-Yang-source/ghidrai"
+homepage = "https://github.com/Wang-Yang-source/ghidrai"
+readme = "README.md"
 keywords = ["reverse-engineering", "tui", "ghidra", "rizin", "binary-analysis"]
 categories = ["command-line-utilities", "development-tools"]
+exclude = [
+    "third_party/capstone/**",
+    "third_party/ghidra/**",
+    "third_party/rizin/**",
+    "third_party/unicorn/**",
+    "third_party/ROPgadget/**",
+    "tests/complex_benchmark",
+    "tests/guess_game",
+]
 
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"] }

@@ -1,6 +1,6 @@
 # GhidrAI Roadmap & TODO
 
-目标：打造一个全开源、纯命令行的逆向工程 TUI，把静态分析、反编译、动态调试、二进制修改、固件解包、内存取证和符号执行工作流统一到一个键盘驱动界面中。
+目标：打造一个全开源、纯命令行的逆向工程 TUI，把静态分析、反编译、动态调试、二进制修改、固件解包、内存取证和符号执行工作流统一到一个键盘优先界面中。
 
 ## 总体策略
 
@@ -22,23 +22,23 @@
 ghidrai/
 ├── crates/             # Rust 核心库 (TUI, AI, Project Memory)
 ├── adapters/           # 工具桥接层 (Ghidra headless scripts, Rizin, Capstone)
-├── third_party/ghidra/ # Ghidra upstream submodule
+├── third_party/        # 工具依赖 submodule (ghidra, rizin, capstone, unicorn, binwalk, ROPgadget)
 └── .ghidrai/           # Project Memory 与缓存
 ```
 
 ### 阶段性交付路线 (MVP 计划)
-- [ ] **MVP 0：项目纳入与合法合规**
-  - 作为 `third_party/ghidra` submodule 纳入，保留 Apache-2.0 / GPL 等相关 LICENSE 声明。
-- [ ] **MVP 1：TUI 外壳**
-  - 核心界面（三栏 TUI、命令面板、日志面板、快捷键）。
-- [ ] **MVP 2：Rust 快速预分析**
+- [x] **MVP 0：项目纳入与合法合规**
+  - 作为 `third_party/` 目录下的 submodules（ghidra, rizin, capstone, unicorn, binwalk, ROPgadget）引入，保留 Apache-2.0 / GPL 等相关 LICENSE 声明。
+- [x] **MVP 1：TUI 外壳**
+  - 构建核心三栏 TUI 面板、命令面板（Command Palette）、日志面板与快捷键绑定，并支持鼠标滚轮与点击交互。
+- [x] **MVP 2：Rust 快速预分析**
   - 使用 `goblin` / `memmap2` 等原生库实现秒级识别（ELF/PE/Mach-O、Sections、Symbols、Strings、Entropy），不依赖后台重型分析。
-- [ ] **MVP 3：Ghidra Headless 接入**
+- [x] **MVP 3：Ghidra Headless 接入**
   - 调用 Ghidra Headless 分析器或 Python/Java 脚本导出核心数据（Functions, Strings, Xrefs, Decompile）为 JSON 并渲染到 TUI。
 - [ ] **MVP 4：AI Memory (项目记忆与假设管理)**
   - 实现用户重命名、注释保存、AI 总结、"Fact vs Hypothesis" 区分及 Markdown 报告导出。
-- [ ] **MVP 5：瑞士军刀插件层**
-  - 接入 Rizin、Radare2、Capstone、GDB、Volatility 等 adapter，补全 TUI 功能。
+- [x] **MVP 5：瑞士军刀插件层**
+  - 接入 Rizin、Binwalk、Capstone、ROP 等内置或外部适配器，填充 TUI 的基本功能拼图。
 
 ## 解析架构
 
@@ -104,18 +104,19 @@ ghidrai/
 
 ## TUI 工作流
 
-- [ ] 顶层 Tab 完整实现：当前已实现 8 个 Tab（Overview `o`、Decompiler `d`、Xrefs `x`、Strings `s`、ROP `r`、Firmware `f`、Findings `g`、Toolkit `t`），计划列表中还剩 3 个未接入：
-  - [x] Decompiler（反编译 + 函数列表）
+- [x] 顶层 Tab 完整实现：当前已实现 8 个 Tab（Overview `o`、Decompiler `d`、Xrefs `x`、Strings `s`、ROP `r`、Firmware `f`、Findings `g`、Toolkit `t`）的初版与渲染流。
+  - [x] Decompiler（反编译 + 函数列表，支持鼠标/键盘联动）
   - [x] Xrefs（调用者/被调用者）
   - [x] Strings（字符串表 + 详情）
   - [x] Toolkit（adapter 说明面板）
   - [x] Overview（二进制摘要 + ASCII 火焰渐变 banner + 格式/架构/段信息）
-- [ ] Disasm（交互式反汇编视图，不依赖 Ghidra bridge；CLI 原生 adapter 已接入）
+  - [x] ROP（gadget 列表面板与详情，已接入内置 Rust ROPgadget 事件流与鼠标交互）
+  - [x] Firmware（Binwalk 扫描结果与文件提取详情，已接入内置 Rust Binwalk 事件流与鼠标交互）
+  - [x] Findings/Logs（独立 Findings 漏洞面板 + 严重级过滤侧栏与详情，已接入事件流与鼠标交互）
+- [ ] 顶层待开发新 Tab 规划：
+  - [ ] Disasm（交互式反汇编视图，不依赖 Ghidra bridge；CLI 原生 adapter 已接入）
   - [ ] Debug（GDB/Frida 动态调试面板）
-  - [x] ROP（gadget 列表面板框架，待接入 adapter 事件流）
-  - [x] Firmware（Binwalk 扫描结果面板框架，待接入 adapter 事件流）
   - [ ] Memory（Volatility 内存取证视图）
-  - [x] Findings/Logs（独立 Findings 面板 + 严重级过滤侧栏）
   - [ ] Call Graph（函数调用图面板：提供层次化的调用关系结构树与快速跳转，基于 GhidraMCP `generate_call_graph` 思路，重点实现！）
   - [ ] Graph Overview（全局概览图：提供高视角的模块、系统调用与核心函数群组的交互全景图，重点实现！）
 - [x] 支持快捷键在函数列表、反汇编、伪代码、引用、日志之间跳转。（`o/d/x/s/r/f/g/t` 切 Tab，`↑↓` 导航，`Enter` 反编译选中函数，`Tab/BackTab` 三区焦点轮换，`v` 切换事件视图）
@@ -141,6 +142,26 @@ ghidrai/
 - [ ] TUI 控制台通过 spawn 自身 CLI 执行命令（`current_exe()`），会在 TUI 内递归启动子进程；工具类命令应直接在 TUI 进程内调用 adapter。
 - [ ] 无 CI/CD 配置（GitHub Actions / GitLab CI）。
 - [ ] CLI `--format pretty` 输出仅打印 `event.message`，未利用 `ToolEvent` 的 `address`、`kind` 等结构化字段做对齐/着色。
+
+## v0.8.0 核心优化路线图 (v0.8.0 Optimization Roadmap)
+
+针对目前的 TUI 实现、子模块架构引入和测试反馈，v0.8.0 将聚焦于以下几个关键性能与交互体验优化点：
+
+1. **内置原生适配器执行优化 (In-Process Spawning Optimization)**
+   - **问题**：当前 TUI 命令面板执行内置命令行工具（如 `toolkit strings`、`toolkit checksec`、`toolkit cwe` 等）时，是通过 `current_exe()` 反射 spawn 一个子进程来执行。这导致在 TUI 内部递归启动子进程，产生了不必要的进程分发开销与资源消耗。
+   - **优化**：重构 TUI 的命令行解析与任务调度系统。对于纯 Rust 实现的原生 Adapter，直接在 TUI 进程内以函数调用/线程共享的方式运行；仅当调用如 Ghidra Headless、Rizin、GDB 等外部复杂工具时，才通过 `ToolProcess` 异步派生子进程。
+
+2. **超长内容窗格与细节面板滚动优化 (Scrollable Details & Multi-Focus Scroll)**
+   - **问题**：在 ROP Gadgets 列表、Findings 漏洞详细日志、Decompiler 伪代码视窗中，长文本内容超出屏幕时缺乏灵活的鼠标/键盘联动滚动控制。
+   - **优化**：在 TUI 交互层扩展多焦点滚动。支持通过 `PageUp/PageDown`、`Ctrl+U/Ctrl+D` 快捷键，或当鼠标悬停在细节面板上时，直接利用滚轮滚动查看详细信息，而无需强制用 `Tab` 键将输入焦点切换到该面板。
+
+3. **基于 Unicorn & Capstone 子模块的 TUI 沙箱模拟 (Unicorn Sandboxed Emulation)**
+   - **设计**：利用项目已集成的 `unicorn` 和 `capstone` 源码子模块，打通“静态反编译”到“动态沙箱验证”的回路。
+   - **优化**：在 Decompiler 伪代码/Disasm 反汇编 Tab 中，支持用户选中某个特定的基本块 (Basic Block) 或函数，一键注入 `Unicorn` 轻量级沙箱。用户可在 TUI 弹窗中设定寄存器初始值，并在沙箱单步模拟后，以 Diff 形式将寄存器与内存状态变化直观反馈在反汇编旁侧。
+
+4. **子模块编译极慢的降级加载与安装向导 (Submodule Build Bottleneck & Automated Setup)**
+   - **问题**：引入 Ghidra, Rizin 等引擎 submodule 极大丰富了项目代码关联与可定制性，但由于其源码极其庞大，完整从源码编译对于普通用户过于冗长。
+   - **优化**：实现 `ghidrai setup` 的自动探测与二进制包下载降级。Submodule 依然保留供高级开发/本地调试使用；针对普通用户，系统在检测到本地无编译引擎时，将自动引导拉取预编译发布包（Precompiled Binaries），实现“零配置秒开”。
 
 ## Schema 与测试
 

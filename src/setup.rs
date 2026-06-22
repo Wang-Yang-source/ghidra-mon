@@ -5,6 +5,37 @@ use crate::error::{Result, RevisorError};
 
 use std::io::Write;
 
+const AUTO_SETUP_ENV: &str = "GHIDRA_AUTO_SETUP";
+
+/// Whether automatic setup should run when Ghidra is missing.
+///
+/// Default: enabled.
+/// Set `GHIDRA_AUTO_SETUP=0`/`false`/`no` to disable and keep explicit setup flow.
+pub fn auto_setup_enabled() -> bool {
+    match std::env::var(AUTO_SETUP_ENV) {
+        Ok(v) => !matches!(v.as_str(), "0" | "false" | "False" | "no" | "No" | "NO"),
+        Err(_) => true,
+    }
+}
+
+/// Ensure Ghidra headless binary is available. If `GHIDRA_AUTO_SETUP` is enabled,
+/// this will install it automatically on first run.
+pub async fn require_ghidra_headless() -> Result<String> {
+    if let Some(path) = find_ghidra_headless() {
+        return Ok(path);
+    }
+
+    if auto_setup_enabled() {
+        println!("[adapter:ghidra] auto-setup enabled and no installation found, downloading... ");
+        setup_ghidra().await?;
+        if let Some(path) = find_ghidra_headless() {
+            return Ok(path);
+        }
+    }
+
+    Err(RevisorError::GhidraNotFound)
+}
+
 /// Find the Ghidra headless analyzer binary.
 ///
 /// Search order:
@@ -39,12 +70,21 @@ pub fn find_ghidra_headless() -> Option<String> {
 pub async fn setup_ghidra() -> Result<()> {
     let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE"))?;
     let install_dir = std::path::PathBuf::from(home).join(".ghidrai");
+
+    if install_dir.join("ghidra/support/analyzeHeadless").exists() {
+        return Ok(());
+    }
+
     std::fs::create_dir_all(&install_dir)
         .map_err(|e| RevisorError::io("create install directory", e))?;
 
     // We will use Ghidra 11.2_PUBLIC as an example
     let ghidra_url = "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_11.2_build/ghidra_11.2_PUBLIC_20240926.zip";
     let zip_path = install_dir.join("ghidra.zip");
+
+    if zip_path.exists() {
+        let _ = std::fs::remove_file(&zip_path);
+    }
 
     println!("[adapter:ghidra] downloading Ghidra 11.2");
     let response = reqwest::get(ghidra_url).await?;

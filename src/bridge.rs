@@ -178,7 +178,10 @@ impl BridgeClient {
     /// Get disassembly for a function.
     pub async fn instructions_for_function(&self, function: &str) -> Result<Vec<InstructionInfo>> {
         let val = self
-            .send_command("instructions", Some(json!({ "function": function })))
+            .send_command(
+                "instructions_for_function",
+                Some(json!({ "function": function })),
+            )
             .await?;
         let instrs = val
             .get("instructions")

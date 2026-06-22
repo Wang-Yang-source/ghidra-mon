@@ -1,3 +1,18 @@
 [submodule "third_party/binwalk"]
 	path = third_party/binwalk
 	url = https://github.com/ReFirmLabs/binwalk.git
+[submodule "third_party/ROPgadget"]
+	path = third_party/ROPgadget
+	url = https://github.com/JonathanSalwan/ROPgadget.git
+[submodule "third_party/ghidra"]
+	path = third_party/ghidra
+	url = https://github.com/NationalSecurityAgency/ghidra.git
+[submodule "third_party/rizin"]
+	path = third_party/rizin
+	url = https://github.com/rizinorg/rizin.git
+[submodule "third_party/capstone"]
+	path = third_party/capstone
+	url = https://github.com/capstone-engine/capstone.git
+[submodule "third_party/unicorn"]
+	path = third_party/unicorn
+	url = https://github.com/unicorn-engine/unicorn.git

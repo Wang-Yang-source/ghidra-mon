@@ -37,9 +37,21 @@ pub struct Cli {
 pub enum Commands {
     /// Run the optional MCP compatibility server over stdio
     #[command(
-        long_about = "Starts the optional JSON-RPC 2.0 MCP compatibility server over stdin/stdout. This is not the product center; it is one adapter over the same reverse engineering backend model."
+        long_about = "Starts the optional JSON-RPC 2.0 MCP compatibility server over stdin/stdout. This is not the product center; it is one adapter over the same reverse engineering backend model.\n\nUse `--backend external` with `GHIDRA_MCP_COMMAND` (and optional `GHIDRA_MCP_ARGS`) to proxy the full `bridge_mcp_ghidra.py` toolset."
     )]
-    Mcp,
+    Mcp {
+        /// MCP backend implementation: `legacy` (default) or `external` (`bridge_mcp_ghidra.py`).
+        ///
+        /// If omitted, `GHIDRA_MCP_BACKEND` is used; when unset, `legacy` is the fallback.
+        #[arg(
+            short = 'b',
+            long = "backend",
+            value_name = "legacy|external",
+            value_parser = ["legacy", "external"],
+            help = "Choose MCP backend implementation"
+        )]
+        backend: Option<String>,
+    },
     /// Set up the optional Ghidra backend
     #[command(
         long_about = "Downloads and configures Ghidra as one optional static analysis/decompiler backend. Ghidrai should continue to support other CLI engines such as Rizin and Binwalk."

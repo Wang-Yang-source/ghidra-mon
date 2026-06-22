@@ -9,9 +9,14 @@ use tokio::sync::Mutex;
 
 pub async fn handle_command(command: Option<Commands>) -> Result<()> {
     match command {
-        Some(Commands::Mcp) => {
-            mcp::run_mcp_server().await;
-            Ok(())
+        Some(Commands::Mcp { backend }) => {
+            if mcp::run_mcp_server(backend.as_deref()).await {
+                Ok(())
+            } else {
+                Err(RevisorError::Other(
+                    "MCP server failed to start or exited with an error".to_string(),
+                ))
+            }
         }
         Some(Commands::Setup) => {
             setup::setup_ghidra().await?;
@@ -21,7 +26,7 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
             project_path,
             project_name,
         }) => {
-            let ghidra_bin = require_ghidra()?;
+            let ghidra_bin = require_ghidra().await?;
             bridge::run_bridge_server(ghidra_bin, project_path, project_name).await?;
             Ok(())
         }
@@ -30,7 +35,7 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
             project_path,
             project_name,
         }) => {
-            let ghidra_bin = require_ghidra()?;
+            let ghidra_bin = require_ghidra().await?;
             let _ = std::fs::create_dir_all(&project_path);
             println!(
                 "[adapter:ghidra] importing {} with Ghidra headless",
@@ -59,7 +64,7 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
             project_path,
             project_name,
         }) => {
-            let ghidra_bin = require_ghidra()?;
+            let ghidra_bin = require_ghidra().await?;
             println!(
                 "[adapter:ghidra] running script {} on project {}",
                 script_name, project_name
@@ -306,13 +311,16 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
     }
 }
 
-pub fn require_ghidra() -> Result<String> {
-    setup::find_ghidra_headless().ok_or_else(|| {
-        eprintln!(
-            "[error] could not find Ghidra. Run 'ghidrai setup' first to install the optional Ghidra backend."
-        );
-        RevisorError::GhidraNotFound
-    })
+pub async fn require_ghidra() -> Result<String> {
+    match setup::require_ghidra_headless().await {
+        Ok(path) => Ok(path),
+        Err(err) => {
+            eprintln!(
+                "[error] could not find or initialize Ghidra. Run 'GHIDRA_AUTO_SETUP=0 ghidrai setup' to install manually."
+            );
+            Err(err)
+        }
+    }
 }
 
 fn print_tool_events(events: Vec<crate::adapter::schema::ToolEvent>, format: &str) -> Result<()> {

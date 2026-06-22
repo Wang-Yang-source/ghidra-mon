@@ -29,14 +29,16 @@ mod model;
 mod runner;
 mod theme;
 
-use crate::adapter::schema::ToolEvent;
-use crate::bridge::{BridgeClient, read_bridge_port};
+use crate::adapter::schema::{Finding, FirmwareEntry, Gadget, ToolEvent, ToolEventKind};
+use crate::bridge::{BridgeClient, read_bridge_port, remove_bridge_port_file};
 use crate::error::Result;
 use crate::types::*;
 use model::{ActivePane, AppTab, EventView};
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseEventKind},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseButton, MouseEventKind,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -73,6 +75,134 @@ fn themed_block(title: &str, focused: bool) -> Block<'_> {
 /// Shorthand for the highlight symbol used in all lists.
 const HIGHLIGHT_SYMBOL: &str = "▸ ";
 
+fn is_left_click(kind: MouseEventKind) -> bool {
+    matches!(
+        kind,
+        MouseEventKind::Down(MouseButton::Left)
+            | MouseEventKind::Up(MouseButton::Left)
+            | MouseEventKind::Drag(MouseButton::Left)
+    )
+}
+
+fn click_in_content(area: Rect, pos: Position) -> bool {
+    let max_x = area.x.saturating_add(area.width);
+    let max_y = area.y.saturating_add(area.height);
+    pos.x > area.x
+        && pos.x.saturating_add(1) < max_x
+        && pos.y > area.y
+        && pos.y.saturating_add(1) < max_y
+}
+
+fn sidebar_index_from_click(area: Rect, pos: Position, offset: usize, len: usize) -> Option<usize> {
+    if !click_in_content(area, pos) {
+        return None;
+    }
+
+    let row_in_content = (pos.y - area.y - 1) as usize;
+    let content_height = area.height.saturating_sub(2) as usize;
+    if row_in_content >= content_height {
+        return None;
+    }
+
+    let clicked = offset.saturating_add(row_in_content);
+    (clicked < len).then_some(clicked)
+}
+
+fn tab_from_click(tab_area: Rect, pos: Position) -> Option<AppTab> {
+    if pos.y != tab_area.y + 1 {
+        return None;
+    }
+    let inner_x = pos.x.saturating_sub(tab_area.x + 1); // skip left border
+    let content_width = tab_area.width.saturating_sub(2);
+    if inner_x >= content_width {
+        return None;
+    }
+
+    let mut current_x: u16 = 0;
+    for (idx, tab) in AppTab::ALL.iter().enumerate() {
+        let tab_width = tab.label().chars().count() as u16;
+        let tab_end = current_x.saturating_add(tab_width);
+        if inner_x < tab_end {
+            return Some(*tab);
+        }
+
+        let is_last = idx + 1 >= AppTab::ALL.len();
+        if is_last {
+            break;
+        }
+
+        // skip divider position after each tab
+        if inner_x == tab_end {
+            return None;
+        }
+        current_x = current_x.saturating_add(tab_width + 1);
+    }
+
+    None
+}
+
+fn trigger_function_actions(
+    func_name: String,
+    bridge_port: Option<u16>,
+    decompiled_code: &mut String,
+    tx_decompile: &tokio::sync::mpsc::Sender<String>,
+    tx_xrefs: &tokio::sync::mpsc::Sender<(Vec<FunctionInfo>, Vec<FunctionInfo>)>,
+) {
+    *decompiled_code = format!("Decompiling {}...", func_name);
+    let port = bridge_port;
+    let tx_dec = tx_decompile.clone();
+    let tx_x = tx_xrefs.clone();
+    tokio::spawn(async move {
+        if let Some(p) = port {
+            let client = BridgeClient::new(p);
+            if let Ok(res) = client.decompile(&func_name).await
+                && let Some(c_code) = res.c_code
+            {
+                let _ = tx_dec.send(c_code).await;
+            }
+
+            let callers = client.callers(&func_name).await.unwrap_or_default();
+            let callees = client.callees(&func_name).await.unwrap_or_default();
+            let _ = tx_x.send((callers, callees)).await;
+        }
+    });
+}
+
+async fn refresh_bridge_data(
+    state: Arc<Mutex<DaemonState>>,
+    port: u16,
+    tx_funcs: tokio::sync::mpsc::Sender<Vec<FunctionInfo>>,
+    tx_strings: tokio::sync::mpsc::Sender<Vec<StringResult>>,
+) {
+    let client = BridgeClient::new(port);
+    if let Ok(funcs) = client.list_functions().await {
+        let count = funcs.len();
+        let mut st = state.lock().await;
+        st.logs.push(events::event_line(ToolEvent::status(
+            "ghidra",
+            format!("loaded {} function(s) from bridge", count),
+        )));
+        drop(st);
+        let _ = tx_funcs.send(funcs).await;
+    } else {
+        let mut st = state.lock().await;
+        st.logs.push(events::event_line(ToolEvent::error(
+            "ghidra",
+            format!("bridge list_functions request failed for port {}", port),
+        )));
+    }
+
+    if let Ok(strs) = client.search_strings("").await {
+        let _ = tx_strings.send(strs).await;
+    } else {
+        let mut st = state.lock().await;
+        st.logs.push(events::event_line(ToolEvent::error(
+            "ghidra",
+            format!("bridge search_strings request failed for port {}", port),
+        )));
+    }
+}
+
 // ─── Main Entry ───────────────────────────────────────────────────────────────
 
 pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
@@ -100,6 +230,15 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
 
     let mut strings: Vec<StringResult> = Vec::new();
     let mut strings_list_state = ListState::default();
+
+    let mut rop_gadgets: Vec<Gadget> = Vec::new();
+    let mut rop_list_state = ListState::default();
+
+    let mut firmware_entries: Vec<FirmwareEntry> = Vec::new();
+    let mut firmware_list_state = ListState::default();
+
+    let mut findings_list: Vec<Finding> = Vec::new();
+    let mut findings_list_state = ListState::default();
 
     let mut decompiled_code = String::from(
         "No decompiler result loaded.\n\nUse the command console to run:\n  analyze <bin> -p <project_dir> -n <project_name>\n  bridge -p <project_dir> -n <project_name>\n\nThen focus the symbol list with TAB and press Enter to decompile.",
@@ -160,51 +299,89 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
     let (tx_xrefs, mut rx_xrefs) = tokio::sync::mpsc::channel(1);
     let (tx_strings, mut rx_strings) = tokio::sync::mpsc::channel(1);
 
-    // If bridge is already online, fetch
+    // If bridge is already online, fetch data.
     if let Some(port) = bridge_port {
-        let client = BridgeClient::new(port);
+        let state_for_refresh = Arc::clone(&state);
         let tx_f = tx_funcs.clone();
         let tx_s = tx_strings.clone();
-        tokio::spawn(async move {
-            if let Ok(funcs) = client.list_functions().await {
-                let _ = tx_f.send(funcs).await;
-            }
-            if let Ok(strs) = client.search_strings("").await {
-                let _ = tx_s.send(strs).await;
-            }
-        });
+        tokio::spawn(refresh_bridge_data(state_for_refresh, port, tx_f, tx_s));
     }
 
     let mut last_bridge_check = std::time::Instant::now();
+    let mut bridge_health_logged = false;
 
     loop {
         tick = tick.wrapping_add(1);
 
-        // Dynamic Bridge Detection
-        if bridge_port.is_none() && last_bridge_check.elapsed() > Duration::from_secs(1) {
+        // Dynamic Bridge Detection / Health Check
+        if last_bridge_check.elapsed() > Duration::from_secs(1) {
             last_bridge_check = std::time::Instant::now();
-            if let Some(port) = read_bridge_port() {
-                bridge_port = Some(port);
-                let mut st = state.lock().await;
-                st.logs.push(events::event_line(ToolEvent::status(
-                    "ghidra",
-                    format!(
-                        "bridge detected on port {}; loading symbols and strings",
-                        port
-                    ),
-                )));
 
-                let client = BridgeClient::new(port);
-                let tx_f = tx_funcs.clone();
-                let tx_s = tx_strings.clone();
-                tokio::spawn(async move {
-                    if let Ok(funcs) = client.list_functions().await {
-                        let _ = tx_f.send(funcs).await;
+            if let Some(port) = bridge_port {
+                match BridgeClient::new(port).ping().await {
+                    Ok(_) => {
+                        if !bridge_health_logged {
+                            let mut st = state.lock().await;
+                            st.logs.push(events::event_line(ToolEvent::status(
+                                "ghidra",
+                                format!("bridge on port {} is alive", port),
+                            )));
+                            bridge_health_logged = true;
+                        }
                     }
-                    if let Ok(strs) = client.search_strings("").await {
-                        let _ = tx_s.send(strs).await;
+                    Err(err) => {
+                        let mut st = state.lock().await;
+                        st.logs.push(events::event_line(ToolEvent::error(
+                            "ghidra",
+                            format!("bridge lost on port {port}: {err}"),
+                        )));
+                        remove_bridge_port_file();
+                        bridge_port = None;
+                        functions.clear();
+                        strings.clear();
+                        callers.clear();
+                        callees.clear();
+                        list_state.select(None);
+                        strings_list_state.select(None);
+                        rop_list_state.select(None);
+                        firmware_list_state.select(None);
+                        findings_list_state.select(None);
+                        decompiled_code = String::from(
+                            "No decompiler result loaded.\n\nUse the command console to run:\n  analyze <bin> -p <project_dir> -n <project_name>\n  bridge -p <project_dir> -n <project_name>\n\nThen focus the symbol list with TAB and press Enter to decompile.",
+                        );
+                        bridge_health_logged = false;
+                        st.logs.push(events::event_line(ToolEvent::status(
+                            "tui",
+                            "bridge disconnected, waiting for next bridge restart",
+                        )));
                     }
-                });
+                }
+            }
+
+            if bridge_port.is_none() {
+                if let Some(port) = read_bridge_port() {
+                    match BridgeClient::new(port).ping().await {
+                        Ok(_) => {
+                            bridge_port = Some(port);
+                            bridge_health_logged = true;
+                            let mut st = state.lock().await;
+                            st.logs.push(events::event_line(ToolEvent::status(
+                                "ghidra",
+                                format!(
+                                    "bridge detected on port {}; loading symbols and strings",
+                                    port
+                                ),
+                            )));
+                            let state_for_refresh = Arc::clone(&state);
+                            let tx_f = tx_funcs.clone();
+                            let tx_s = tx_strings.clone();
+                            tokio::spawn(refresh_bridge_data(state_for_refresh, port, tx_f, tx_s));
+                        }
+                        Err(_) => {
+                            bridge_health_logged = false;
+                        }
+                    }
+                }
             }
         }
 
@@ -222,12 +399,18 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
             functions = funcs;
             if !functions.is_empty() {
                 list_state.select(Some(0));
+            } else {
+                list_state.select(None);
+                callers.clear();
+                callees.clear();
             }
         }
         if let Ok(strs) = rx_strings.try_recv() {
             strings = strs;
             if !strings.is_empty() {
                 strings_list_state.select(Some(0));
+            } else {
+                strings_list_state.select(None);
             }
         }
         if let Ok(code) = rx_decompile.try_recv() {
@@ -239,6 +422,68 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
         }
 
         let st = state.lock().await.clone();
+
+        // Rebuild ROP, Firmware, and Findings from logs
+        let mut new_rop_gadgets = Vec::new();
+        let mut new_firmware_entries = Vec::new();
+        let mut new_findings = Vec::new();
+        for log in &st.logs {
+            if let Ok(ev) = serde_json::from_str::<ToolEvent>(log) {
+                match ev.kind {
+                    ToolEventKind::Gadget => {
+                        if let Ok(g) = serde_json::from_value::<Gadget>(ev.data.clone()) {
+                            new_rop_gadgets.push(g);
+                        } else {
+                            let address = ev
+                                .address
+                                .as_deref()
+                                .and_then(|a| {
+                                    u64::from_str_radix(a.trim_start_matches("0x"), 16).ok()
+                                })
+                                .unwrap_or(0);
+                            let insts = ev
+                                .message
+                                .split(':')
+                                .last()
+                                .unwrap_or(&ev.message)
+                                .split(';')
+                                .map(|s| s.trim().to_string())
+                                .collect();
+                            new_rop_gadgets.push(Gadget {
+                                address,
+                                instructions: insts,
+                            });
+                        }
+                    }
+                    ToolEventKind::FirmwareEntry => {
+                        if let Ok(fe) = serde_json::from_value::<FirmwareEntry>(ev.data.clone()) {
+                            new_firmware_entries.push(fe);
+                        }
+                    }
+                    ToolEventKind::Finding => {
+                        if let Ok(f) = serde_json::from_value::<Finding>(ev.data.clone()) {
+                            new_findings.push(f);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if !new_rop_gadgets.is_empty() && rop_gadgets.is_empty() {
+            rop_list_state.select(Some(0));
+        }
+        rop_gadgets = new_rop_gadgets;
+
+        if !new_firmware_entries.is_empty() && firmware_entries.is_empty() {
+            firmware_list_state.select(Some(0));
+        }
+        firmware_entries = new_firmware_entries;
+
+        if !new_findings.is_empty() && findings_list.is_empty() {
+            findings_list_state.select(Some(0));
+        }
+        findings_list = new_findings;
 
         // Collect overview data from recent info logs
         if app_tab == AppTab::Overview && overview_lines.is_empty() {
@@ -297,6 +542,7 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                 .select(app_tab.index())
                 .style(theme::tab_inactive())
                 .highlight_style(theme::tab_active())
+                .padding("", "")
                 .divider(Span::styled("│", Style::default().fg(theme::SMOKE)));
             f.render_widget(tabs, main_chunks[0]);
 
@@ -317,11 +563,31 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
 
             // ── Render per-tab content ────────────────────────────────────
             match app_tab {
-                AppTab::Overview => {
-                    render_overview(f, ide_chunks[0], ide_chunks[1], sidebar_focused, main_focused, &functions, &mut list_state, &overview_lines, tick);
+                        AppTab::Overview => {
+                    render_overview(
+                        f,
+                        ide_chunks[0],
+                        ide_chunks[1],
+                        sidebar_focused,
+                        main_focused,
+                        bridge_port.is_some(),
+                        app_tab,
+                        &functions,
+                        &mut list_state,
+                        &overview_lines,
+                        tick,
+                    );
                 }
                 AppTab::Decompiler => {
-                    render_sidebar_functions(f, ide_chunks[0], sidebar_focused, &functions, &mut list_state);
+                    render_sidebar_functions(
+                        f,
+                        ide_chunks[0],
+                        sidebar_focused,
+                        bridge_port.is_some(),
+                        app_tab,
+                        &functions,
+                        &mut list_state,
+                    );
                     let highlighted_lines = highlight::c_code(&decompiled_code, &ps, &ts);
                     let code_block = Paragraph::new(highlighted_lines)
                         .block(themed_block("Decompiled C", main_focused))
@@ -329,61 +595,132 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                     f.render_widget(code_block, ide_chunks[1]);
                 }
                 AppTab::XRefs => {
-                    render_sidebar_functions(f, ide_chunks[0], sidebar_focused, &functions, &mut list_state);
+                    render_sidebar_functions(
+                        f,
+                        ide_chunks[0],
+                        sidebar_focused,
+                        bridge_port.is_some(),
+                        app_tab,
+                        &functions,
+                        &mut list_state,
+                    );
 
                     let xrefs_chunks = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                         .split(ide_chunks[1]);
 
-                    let callers_items: Vec<ListItem> = callers
-                        .iter()
-                        .map(|func| {
-                            ListItem::new(Line::from(vec![
-                                Span::styled("← ", theme::xref_caller()),
-                                Span::styled(&func.name, Style::default().fg(theme::BONE)),
-                                Span::styled(format!(" @ {}", func.address), theme::address()),
-                            ]))
-                        })
-                        .collect();
-                    let callers_list = List::new(callers_items)
-                        .block(themed_block("Callers (incoming)", main_focused))
-                        .highlight_style(theme::list_highlight())
-                        .highlight_symbol(HIGHLIGHT_SYMBOL);
-                    f.render_widget(callers_list, xrefs_chunks[0]);
+                    if callers.is_empty() {
+                        render_placeholder(
+                            f,
+                            xrefs_chunks[0],
+                            main_focused,
+                            "Callers (incoming)",
+                            if bridge_port.is_some() {
+                                &[
+                                    "No callers loaded.",
+                                    "",
+                                    "Select a function and trigger XRefs:",
+                                    "  [Enter] in sidebar (Decompiler/XRefs/Overview)",
+                                    "  or switch to XRefs using [x]",
+                                ]
+                            } else {
+                                &[
+                                    "No bridge available.",
+                                    "",
+                                    "Run Ghidra backend first:",
+                                    "  analyze <bin> -p <project_dir> -n <project_name>",
+                                    "  bridge -p <project_dir> -n <project_name>",
+                                ]
+                            },
+                        );
+                    } else {
+                        let callers_items: Vec<ListItem> = callers
+                            .iter()
+                            .map(|func| {
+                                ListItem::new(Line::from(vec![
+                                    Span::styled("← ", theme::xref_caller()),
+                                    Span::styled(&func.name, Style::default().fg(theme::BONE)),
+                                    Span::styled(format!(" @ {}", func.address), theme::address()),
+                                ]))
+                            })
+                            .collect();
+                        let callers_list = List::new(callers_items)
+                            .block(themed_block("Callers (incoming)", main_focused))
+                            .highlight_style(theme::list_highlight())
+                            .highlight_symbol(HIGHLIGHT_SYMBOL);
+                        f.render_widget(callers_list, xrefs_chunks[0]);
+                    }
 
-                    let callees_items: Vec<ListItem> = callees
-                        .iter()
-                        .map(|func| {
-                            ListItem::new(Line::from(vec![
-                                Span::styled("→ ", theme::xref_callee()),
-                                Span::styled(&func.name, Style::default().fg(theme::BONE)),
-                                Span::styled(format!(" @ {}", func.address), theme::address()),
-                            ]))
-                        })
-                        .collect();
-                    let callees_list = List::new(callees_items)
-                        .block(themed_block("Callees (outgoing)", main_focused))
-                        .highlight_style(theme::list_highlight())
-                        .highlight_symbol(HIGHLIGHT_SYMBOL);
-                    f.render_widget(callees_list, xrefs_chunks[1]);
+                    if callees.is_empty() {
+                        render_placeholder(
+                            f,
+                            xrefs_chunks[1],
+                            main_focused,
+                            "Callees (outgoing)",
+                            if bridge_port.is_some() {
+                                &[
+                                    "No callees loaded.",
+                                    "",
+                                    "Select a function and trigger XRefs:",
+                                    "  [Enter] in sidebar (Decompiler/XRefs/Overview)",
+                                    "  or switch to XRefs using [x]",
+                                ]
+                            } else {
+                                &[
+                                    "No bridge available.",
+                                    "",
+                                    "Run Ghidra backend first:",
+                                    "  analyze <bin> -p <project_dir> -n <project_name>",
+                                    "  bridge -p <project_dir> -n <project_name>",
+                                ]
+                            },
+                        );
+                    } else {
+                        let callees_items: Vec<ListItem> = callees
+                            .iter()
+                            .map(|func| {
+                                ListItem::new(Line::from(vec![
+                                    Span::styled("→ ", theme::xref_callee()),
+                                    Span::styled(&func.name, Style::default().fg(theme::BONE)),
+                                    Span::styled(format!(" @ {}", func.address), theme::address()),
+                                ]))
+                            })
+                            .collect();
+                        let callees_list = List::new(callees_items)
+                            .block(themed_block("Callees (outgoing)", main_focused))
+                            .highlight_style(theme::list_highlight())
+                            .highlight_symbol(HIGHLIGHT_SYMBOL);
+                        f.render_widget(callees_list, xrefs_chunks[1]);
+                    }
                 }
                 AppTab::Strings => {
-                    let str_items: Vec<ListItem> = strings
-                        .iter()
-                        .map(|s| {
-                            ListItem::new(Line::from(vec![
-                                Span::styled(&s.address, theme::address()),
-                                Span::styled(" │ ", Style::default().fg(theme::SMOKE)),
-                                Span::styled(&s.value, Style::default().fg(theme::SAND)),
-                            ]))
-                        })
-                        .collect();
-                    let str_list = List::new(str_items)
-                        .block(themed_block("Strings", sidebar_focused))
-                        .highlight_style(theme::list_highlight())
-                        .highlight_symbol(HIGHLIGHT_SYMBOL);
-                    f.render_stateful_widget(str_list, ide_chunks[0], &mut strings_list_state);
+                    if strings.is_empty() {
+                        render_sidebar_command_list(
+                            f,
+                            ide_chunks[0],
+                            sidebar_focused,
+                            "Strings",
+                            strings_sidebar_commands(),
+                            &mut strings_list_state,
+                        );
+                    } else {
+                        let str_items: Vec<ListItem> = strings
+                            .iter()
+                            .map(|s| {
+                                ListItem::new(Line::from(vec![
+                                    Span::styled(&s.address, theme::address()),
+                                    Span::styled(" │ ", Style::default().fg(theme::SMOKE)),
+                                    Span::styled(&s.value, Style::default().fg(theme::SAND)),
+                                ]))
+                            })
+                            .collect();
+                        let str_list = List::new(str_items)
+                            .block(themed_block("Strings", sidebar_focused))
+                            .highlight_style(theme::list_highlight())
+                            .highlight_symbol(HIGHLIGHT_SYMBOL);
+                        f.render_stateful_widget(str_list, ide_chunks[0], &mut strings_list_state);
+                    }
 
                     let detail = if let Some(i) = strings_list_state.selected() {
                         strings
@@ -407,61 +744,263 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                     f.render_widget(detail_block, ide_chunks[1]);
                 }
                 AppTab::ROP => {
-                    render_sidebar_functions(f, ide_chunks[0], sidebar_focused, &functions, &mut list_state);
-                    render_placeholder(f, ide_chunks[1], main_focused,
-                        "ROP Gadgets",
-                        &[
-                            "ROP gadget discovery powered by iced-x86.",
-                            "",
-                            "Run from the console:",
-                            "  toolkit rop <binary>",
-                            "",
-                            "Gadgets will appear here once a scan completes.",
-                            "Current adapter: pure Rust (64-bit x86).",
-                        ],
-                    );
+                    if rop_gadgets.is_empty() {
+                        render_placeholder(
+                            f,
+                            ide_chunks[0],
+                            sidebar_focused,
+                            "Gadget Discovery",
+                            &[
+                                "No ROP gadgets yet.",
+                                "",
+                                "Run in console:",
+                                "  toolkit rop <binary>",
+                                "  toolkit disasm <binary>",
+                                "  toolkit strings <binary>",
+                            ],
+                        );
+                        render_placeholder(f, ide_chunks[1], main_focused,
+                            "ROP Gadgets",
+                            &[
+                                "ROP gadget discovery powered by iced-x86.",
+                                "",
+                                "Run from the console:",
+                                "  toolkit rop <binary>",
+                                "",
+                                "Gadgets will appear here once a scan completes.",
+                                "Current adapter: pure Rust (64-bit x86).",
+                            ],
+                        );
+                    } else {
+                        let rop_items: Vec<ListItem> = rop_gadgets
+                            .iter()
+                            .map(|g| {
+                                ListItem::new(Line::from(vec![
+                                    Span::styled(format!("0x{:x}", g.address), theme::address()),
+                                ]))
+                            })
+                            .collect();
+                        let rop_list = List::new(rop_items)
+                            .block(themed_block("Gadgets", sidebar_focused))
+                            .highlight_style(theme::list_highlight())
+                            .highlight_symbol(HIGHLIGHT_SYMBOL);
+                        f.render_stateful_widget(rop_list, ide_chunks[0], &mut rop_list_state);
+
+                        let detail = if let Some(i) = rop_list_state.selected() {
+                            if let Some(g) = rop_gadgets.get(i) {
+                                let mut lines = vec![
+                                    Line::from(""),
+                                    theme::gradient_text("  ROP Gadget Details", theme::FIRE_GRADIENT, true),
+                                    Line::from(""),
+                                    Line::from(vec![
+                                        Span::styled("  Address:      ", Style::default().fg(theme::AMBER).add_modifier(Modifier::BOLD)),
+                                        Span::styled(format!("0x{:x}", g.address), Style::default().fg(theme::BONE)),
+                                    ]),
+                                    Line::from(vec![
+                                        Span::styled("  Instructions: ", Style::default().fg(theme::AMBER).add_modifier(Modifier::BOLD)),
+                                        Span::styled(g.instructions.join(" ; "), Style::default().fg(theme::SAND)),
+                                    ]),
+                                    Line::from(""),
+                                    theme::gradient_rule(60, theme::EMBER, theme::SOLAR),
+                                    Line::from(""),
+                                ];
+                                for inst in &g.instructions {
+                                    lines.push(Line::from(vec![
+                                        Span::styled("    ▸ ", Style::default().fg(theme::ORANGE)),
+                                        Span::styled(inst.clone(), Style::default().fg(theme::BONE)),
+                                    ]));
+                                }
+                                lines
+                            } else {
+                                vec![Line::from("  No gadget selected.")]
+                            }
+                        } else {
+                            vec![Line::from("  No gadget selected.")]
+                        };
+                        let detail_block = Paragraph::new(detail)
+                            .block(themed_block("Gadget View", main_focused))
+                            .wrap(Wrap { trim: false });
+                        f.render_widget(detail_block, ide_chunks[1]);
+                    }
                 }
                 AppTab::Firmware => {
-                    let fw_sidebar_items: Vec<ListItem> = vec![
-                        ListItem::new(Line::from(vec![
-                            Span::styled("binwalk", Style::default().fg(theme::ORANGE).add_modifier(Modifier::BOLD)),
-                            Span::styled("  firmware scanner", Style::default().fg(theme::ASH)),
-                        ])),
-                    ];
-                    let fw_list = List::new(fw_sidebar_items)
-                        .block(themed_block("Engines", sidebar_focused))
-                        .highlight_style(theme::list_highlight())
-                        .highlight_symbol(HIGHLIGHT_SYMBOL);
-                    f.render_widget(fw_list, ide_chunks[0]);
-                    render_placeholder(f, ide_chunks[1], main_focused,
-                        "Firmware Scan",
-                        &[
-                            "Binwalk firmware analysis results.",
-                            "",
-                            "Run from the console:",
-                            "  toolkit binwalk <firmware.bin>",
-                            "",
-                            "Detected signatures, embedded filesystems,",
-                            "and entropy analysis will appear here.",
-                        ],
-                    );
+                    if firmware_entries.is_empty() {
+                        render_placeholder(
+                            f,
+                            ide_chunks[0],
+                            sidebar_focused,
+                            "Firmware Scan",
+                            &[
+                                "No firmware results yet.",
+                                "",
+                                "Run in console:",
+                                "  toolkit binwalk <firmware.bin>",
+                                "  toolkit entropy <firmware.bin>",
+                                "  toolkit lief <firmware.bin>",
+                            ],
+                        );
+                        render_placeholder(f, ide_chunks[1], main_focused,
+                            "Firmware Scan",
+                            &[
+                                "Binwalk firmware analysis results.",
+                                "",
+                                "Run from the console:",
+                                "  toolkit binwalk <firmware.bin>",
+                                "",
+                                "Detected signatures, embedded filesystems,",
+                                "and entropy analysis will appear here.",
+                            ],
+                        );
+                    } else {
+                        let fw_items: Vec<ListItem> = firmware_entries
+                            .iter()
+                            .map(|entry| {
+                                ListItem::new(Line::from(vec![
+                                    Span::styled(format!("0x{:x}", entry.offset), theme::address()),
+                                ]))
+                            })
+                            .collect();
+                        let fw_list = List::new(fw_items)
+                            .block(themed_block("Offsets", sidebar_focused))
+                            .highlight_style(theme::list_highlight())
+                            .highlight_symbol(HIGHLIGHT_SYMBOL);
+                        f.render_stateful_widget(fw_list, ide_chunks[0], &mut firmware_list_state);
+
+                        let detail = if let Some(i) = firmware_list_state.selected() {
+                            if let Some(entry) = firmware_entries.get(i) {
+                                vec![
+                                    Line::from(""),
+                                    theme::gradient_text("  Firmware Signature Details", theme::FIRE_GRADIENT, true),
+                                    Line::from(""),
+                                    Line::from(vec![
+                                        Span::styled("  Offset:      ", Style::default().fg(theme::AMBER).add_modifier(Modifier::BOLD)),
+                                        Span::styled(format!("0x{:x} ({})", entry.offset, entry.offset), Style::default().fg(theme::BONE)),
+                                    ]),
+                                    Line::from(vec![
+                                        Span::styled("  Description: ", Style::default().fg(theme::AMBER).add_modifier(Modifier::BOLD)),
+                                        Span::styled(&entry.description, Style::default().fg(theme::SAND)),
+                                    ]),
+                                    Line::from(""),
+                                    theme::gradient_rule(60, theme::EMBER, theme::SOLAR),
+                                    Line::from(""),
+                                    Line::from(Span::styled("  Extracted firmware magic signature hit.", Style::default().fg(theme::ASH))),
+                                ]
+                            } else {
+                                vec![Line::from("  No entry selected.")]
+                            }
+                        } else {
+                            vec![Line::from("  No entry selected.")]
+                        };
+                        let detail_block = Paragraph::new(detail)
+                            .block(themed_block("Signature Detail", main_focused))
+                            .wrap(Wrap { trim: false });
+                        f.render_widget(detail_block, ide_chunks[1]);
+                    }
                 }
                 AppTab::Findings => {
-                    render_placeholder(f, ide_chunks[0], sidebar_focused,
-                        "Severity",
-                        &["[Critical]", "[High]", "[Medium]", "[Low]", "[Info]"],
-                    );
-                    render_placeholder(f, ide_chunks[1], main_focused,
-                        "Findings / Audit Log",
-                        &[
-                            "Security findings from all adapters.",
-                            "",
-                            "checksec, native CWE triage, CWE_Checker, and custom rules",
-                            "will populate findings here.",
-                            "",
-                            "Run: toolkit cwe <binary>",
-                        ],
-                    );
+                    if findings_list.is_empty() {
+                        render_placeholder(
+                            f,
+                            ide_chunks[0],
+                            sidebar_focused,
+                            "Findings",
+                            &[
+                                "No findings yet.",
+                                "",
+                                "Run in console:",
+                                "  toolkit cwe <binary>",
+                                "  toolkit checksec <binary>",
+                                "  toolkit lief <binary>",
+                                "",
+                                "Severity tags: [Critical] [High] [Medium] [Low] [Info]",
+                            ],
+                        );
+                        render_placeholder(f, ide_chunks[1], main_focused,
+                            "Findings / Audit Log",
+                            &[
+                                "Security findings from all adapters.",
+                                "",
+                                "checksec, native CWE triage, CWE_Checker, and custom rules",
+                                "will populate findings here.",
+                                "",
+                                "Run: toolkit cwe <binary>",
+                            ],
+                        );
+                    } else {
+                        let find_items: Vec<ListItem> = findings_list
+                            .iter()
+                            .map(|finding| {
+                                let sev = finding.severity.as_deref().unwrap_or("info");
+                                let sev_style = match sev.to_lowercase().as_str() {
+                                    "high" | "critical" => theme::log_error(),
+                                    "medium" => Style::default().fg(theme::ORANGE),
+                                    _ => Style::default().fg(theme::AMBER),
+                                };
+                                ListItem::new(Line::from(vec![
+                                    Span::styled(format!("[{}] ", sev), sev_style),
+                                    Span::styled(&finding.title, Style::default().fg(theme::BONE)),
+                                ]))
+                            })
+                            .collect();
+                        let find_list = List::new(find_items)
+                            .block(themed_block("Findings", sidebar_focused))
+                            .highlight_style(theme::list_highlight())
+                            .highlight_symbol(HIGHLIGHT_SYMBOL);
+                        f.render_stateful_widget(find_list, ide_chunks[0], &mut findings_list_state);
+
+                        let detail = if let Some(i) = findings_list_state.selected() {
+                            if let Some(finding) = findings_list.get(i) {
+                                let sev = finding.severity.as_deref().unwrap_or("info");
+                                let sev_style = match sev.to_lowercase().as_str() {
+                                    "high" | "critical" => theme::log_error(),
+                                    "medium" => Style::default().fg(theme::ORANGE),
+                                    _ => Style::default().fg(theme::AMBER),
+                                };
+                                vec![
+                                    Line::from(""),
+                                    theme::gradient_text("  Security Finding Details", theme::FIRE_GRADIENT, true),
+                                    Line::from(""),
+                                    Line::from(vec![
+                                        Span::styled("  CWE / Title:  ", Style::default().fg(theme::AMBER).add_modifier(Modifier::BOLD)),
+                                        Span::styled(&finding.title, Style::default().fg(theme::BONE)),
+                                    ]),
+                                    Line::from(vec![
+                                        Span::styled("  Severity:     ", Style::default().fg(theme::AMBER).add_modifier(Modifier::BOLD)),
+                                        Span::styled(sev, sev_style),
+                                    ]),
+                                    Line::from(vec![
+                                        Span::styled("  Address:      ", Style::default().fg(theme::AMBER).add_modifier(Modifier::BOLD)),
+                                        Span::styled(finding.address.as_deref().unwrap_or("N/A"), theme::address()),
+                                    ]),
+                                    Line::from(vec![
+                                        Span::styled("  Source:       ", Style::default().fg(theme::AMBER).add_modifier(Modifier::BOLD)),
+                                        Span::styled(&finding.source, Style::default().fg(theme::ASH)),
+                                    ]),
+                                    Line::from(""),
+                                    Line::from(vec![
+                                        Span::styled("  Description:  ", Style::default().fg(theme::AMBER).add_modifier(Modifier::BOLD)),
+                                        Span::styled(&finding.description, Style::default().fg(theme::SAND)),
+                                    ]),
+                                    Line::from(""),
+                                    theme::gradient_rule(60, theme::EMBER, theme::SOLAR),
+                                    Line::from(""),
+                                    Line::from(Span::styled("  Evidence Data:", Style::default().fg(theme::AMBER).add_modifier(Modifier::BOLD))),
+                                    Line::from(Span::styled(
+                                        format!("    {}", serde_json::to_string_pretty(&finding.extra).unwrap_or_default()),
+                                        Style::default().fg(theme::SAND),
+                                    )),
+                                ]
+                            } else {
+                                vec![Line::from("  No finding selected.")]
+                            }
+                        } else {
+                            vec![Line::from("  No finding selected.")]
+                        };
+                        let detail_block = Paragraph::new(detail)
+                            .block(themed_block("Audit Log / Findings Details", main_focused))
+                            .wrap(Wrap { trim: false });
+                        f.render_widget(detail_block, ide_chunks[1]);
+                    }
                 }
                 AppTab::Toolkit => {
                     let tools = [
@@ -554,7 +1093,15 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
 
             // ── 4. Command Console ───────────────────────────────────────
             let ghost_text = if active_pane == ActivePane::Input {
-                commands::ghost_text(&input, &command_history, &suggestions)
+                if input.is_empty() {
+                    if functions.is_empty() {
+                        "analyze <binary> -p <project_dir> -n <project_name>".to_string()
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    commands::ghost_text(&input, &command_history, &suggestions)
+                }
             } else {
                 String::new()
             };
@@ -573,7 +1120,11 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                 }
                 sugg_str
             } else {
-                String::from(" Console │ → accepts completion ")
+                if functions.is_empty() {
+                    String::from(" Console │ 输入 analyze / toolkit，回车执行 ")
+                } else {
+                    String::from(" Console │ → accepts completion ")
+                }
             };
 
             // Pulse the cursor color slightly
@@ -652,23 +1203,12 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                         KeyCode::Char('x') if active_pane != ActivePane::Input => {
                             app_tab = AppTab::XRefs;
                             // Trigger xrefs fetch for current selected function
-                            if let Some(i) = list_state.selected()
-                                && let Some(func) = functions.get(i)
-                            {
-                                let func_name = func.name.clone();
-                                let tx = tx_xrefs.clone();
-                                let port = bridge_port;
-                                tokio::spawn(async move {
-                                    if let Some(p) = port {
-                                        let client = BridgeClient::new(p);
-                                        let callers =
-                                            client.callers(&func_name).await.unwrap_or_default();
-                                        let callees =
-                                            client.callees(&func_name).await.unwrap_or_default();
-                                        let _ = tx.send((callers, callees)).await;
-                                    }
-                                });
-                            }
+                            fetch_xrefs_for_selected_function(
+                                &functions,
+                                &list_state,
+                                bridge_port,
+                                &tx_xrefs,
+                            );
                         }
                         KeyCode::Char('s') if active_pane != ActivePane::Input => {
                             app_tab = AppTab::Strings;
@@ -691,6 +1231,25 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                             if app_tab == AppTab::Strings {
                                 let i = match strings_list_state.selected() {
                                     Some(i) => {
+                                        let max = if strings.is_empty() {
+                                            strings_sidebar_commands().len()
+                                        } else {
+                                            strings.len()
+                                        };
+                                        if i == 0 {
+                                            0
+                                        } else if i >= max {
+                                            max.saturating_sub(1)
+                                        } else {
+                                            i - 1
+                                        }
+                                    }
+                                    None => 0,
+                                };
+                                strings_list_state.select(Some(i));
+                            } else if app_tab == AppTab::ROP {
+                                let i = match rop_list_state.selected() {
+                                    Some(i) => {
                                         if i == 0 {
                                             0
                                         } else {
@@ -699,11 +1258,51 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                                     }
                                     None => 0,
                                 };
-                                strings_list_state.select(Some(i));
+                                rop_list_state.select(Some(i));
+                            } else if app_tab == AppTab::Firmware {
+                                let i = match firmware_list_state.selected() {
+                                    Some(i) => {
+                                        if i == 0 {
+                                            0
+                                        } else {
+                                            i - 1
+                                        }
+                                    }
+                                    None => 0,
+                                };
+                                firmware_list_state.select(Some(i));
+                            } else if app_tab == AppTab::Findings {
+                                let i = match findings_list_state.selected() {
+                                    Some(i) => {
+                                        if i == 0 {
+                                            0
+                                        } else {
+                                            i - 1
+                                        }
+                                    }
+                                    None => 0,
+                                };
+                                findings_list_state.select(Some(i));
                             } else {
                                 let i = match list_state.selected() {
                                     Some(i) => {
-                                        if i == 0 {
+                                        if matches!(
+                                            app_tab,
+                                            AppTab::Overview | AppTab::Decompiler | AppTab::XRefs
+                                        ) {
+                                            let max = if functions.is_empty() {
+                                                sidebar_command_count(app_tab)
+                                            } else {
+                                                functions.len()
+                                            };
+                                            if i == 0 {
+                                                0
+                                            } else if i >= max {
+                                                max.saturating_sub(1)
+                                            } else {
+                                                i - 1
+                                            }
+                                        } else if i == 0 {
                                             0
                                         } else {
                                             i - 1
@@ -716,10 +1315,15 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                         }
                         KeyCode::Down if active_pane == ActivePane::Sidebar => {
                             if app_tab == AppTab::Strings {
+                                let max = if strings.is_empty() {
+                                    strings_sidebar_commands().len().saturating_sub(1)
+                                } else {
+                                    strings.len().saturating_sub(1)
+                                };
                                 let i = match strings_list_state.selected() {
                                     Some(i) => {
-                                        if i >= strings.len().saturating_sub(1) {
-                                            strings.len().saturating_sub(1)
+                                        if i >= max {
+                                            max
                                         } else {
                                             i + 1
                                         }
@@ -727,11 +1331,59 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                                     None => 0,
                                 };
                                 strings_list_state.select(Some(i));
+                            } else if app_tab == AppTab::ROP {
+                                let i = match rop_list_state.selected() {
+                                    Some(i) => {
+                                        if i >= rop_gadgets.len().saturating_sub(1) {
+                                            rop_gadgets.len().saturating_sub(1)
+                                        } else {
+                                            i + 1
+                                        }
+                                    }
+                                    None => 0,
+                                };
+                                rop_list_state.select(Some(i));
+                            } else if app_tab == AppTab::Firmware {
+                                let i = match firmware_list_state.selected() {
+                                    Some(i) => {
+                                        if i >= firmware_entries.len().saturating_sub(1) {
+                                            firmware_entries.len().saturating_sub(1)
+                                        } else {
+                                            i + 1
+                                        }
+                                    }
+                                    None => 0,
+                                };
+                                firmware_list_state.select(Some(i));
+                            } else if app_tab == AppTab::Findings {
+                                let i = match findings_list_state.selected() {
+                                    Some(i) => {
+                                        if i >= findings_list.len().saturating_sub(1) {
+                                            findings_list.len().saturating_sub(1)
+                                        } else {
+                                            i + 1
+                                        }
+                                    }
+                                    None => 0,
+                                };
+                                findings_list_state.select(Some(i));
                             } else {
+                                let max = if matches!(
+                                    app_tab,
+                                    AppTab::Overview | AppTab::Decompiler | AppTab::XRefs
+                                ) {
+                                    if functions.is_empty() {
+                                        sidebar_command_count(app_tab).saturating_sub(1)
+                                    } else {
+                                        functions.len().saturating_sub(1)
+                                    }
+                                } else {
+                                    functions.len().saturating_sub(1)
+                                };
                                 let i = match list_state.selected() {
                                     Some(i) => {
-                                        if i >= functions.len().saturating_sub(1) {
-                                            functions.len().saturating_sub(1)
+                                        if i >= max {
+                                            max
                                         } else {
                                             i + 1
                                         }
@@ -744,43 +1396,34 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
 
                         // ── Execution ───────────────────────────────
                         KeyCode::Enter if active_pane == ActivePane::Sidebar => {
-                            if (app_tab == AppTab::Decompiler
+                            if app_tab == AppTab::Strings {
+                                if let Some(i) = strings_list_state.selected()
+                                    && let Some(cmd) = strings_sidebar_command(i)
+                                {
+                                    input = cmd.to_string();
+                                    active_pane = ActivePane::Input;
+                                }
+                            } else if app_tab == AppTab::Decompiler
                                 || app_tab == AppTab::XRefs
-                                || app_tab == AppTab::Overview)
-                                && let Some(i) = list_state.selected()
-                                && let Some(func) = functions.get(i)
+                                || app_tab == AppTab::Overview
                             {
-                                let func_name = func.name.clone();
-
-                                // Fetch Decompile
-                                let tx_dec = tx_decompile.clone();
-                                let port = bridge_port;
-                                decompiled_code = format!("Decompiling {}...", func_name);
-                                let func_name_dec = func_name.clone();
-                                tokio::spawn(async move {
-                                    if let Some(p) = port {
-                                        let client = BridgeClient::new(p);
-                                        if let Ok(res) = client.decompile(&func_name_dec).await
-                                            && let Some(c_code) = res.c_code
-                                        {
-                                            let _ = tx_dec.send(c_code).await;
+                                if let Some(i) = list_state.selected() {
+                                    if functions.is_empty() {
+                                        if let Some(cmd) = sidebar_command(app_tab, i) {
+                                            input = cmd.to_string();
+                                            active_pane = ActivePane::Input;
                                         }
+                                    } else if let Some(func) = functions.get(i) {
+                                        let func_name = func.name.clone();
+                                        trigger_function_actions(
+                                            func_name,
+                                            bridge_port,
+                                            &mut decompiled_code,
+                                            &tx_decompile,
+                                            &tx_xrefs,
+                                        );
                                     }
-                                });
-
-                                // Fetch XRefs
-                                let tx_x = tx_xrefs.clone();
-                                let func_name2 = func_name.clone();
-                                tokio::spawn(async move {
-                                    if let Some(p) = port {
-                                        let client = BridgeClient::new(p);
-                                        let callers =
-                                            client.callers(&func_name2).await.unwrap_or_default();
-                                        let callees =
-                                            client.callees(&func_name2).await.unwrap_or_default();
-                                        let _ = tx_x.send((callers, callees)).await;
-                                    }
-                                });
+                                }
                             }
                         }
 
@@ -862,26 +1505,20 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                 }
                 Event::Mouse(mouse) => {
                     let pos = Position::new(mouse.column, mouse.row);
+                    let is_click = is_left_click(mouse.kind);
 
                     // ── Click on Tab Bar → switch tab ────────────────
                     if tab_area.contains(pos) {
-                        if let MouseEventKind::Down(crossterm::event::MouseButton::Left) =
-                            mouse.kind
-                        {
-                            if mouse.row == tab_area.y + 1 {
-                                let inner_x = mouse.column.saturating_sub(tab_area.x + 1); // skip border
-                                let mut current_x = 0;
-                                let mut clicked_tab = None;
-                                for tab in AppTab::ALL {
-                                    let width = tab.label().chars().count() as u16;
-                                    if inner_x >= current_x && inner_x < current_x + width {
-                                        clicked_tab = Some(tab);
-                                        break;
-                                    }
-                                    current_x += width + 1; // +1 for the divider "│"
-                                }
-                                if let Some(tab) = clicked_tab {
-                                    app_tab = *tab;
+                        if is_click {
+                            if let Some(tab) = tab_from_click(tab_area, pos) {
+                                app_tab = tab;
+                                if matches!(tab, AppTab::XRefs) {
+                                    fetch_xrefs_for_selected_function(
+                                        &functions,
+                                        &list_state,
+                                        bridge_port,
+                                        &tx_xrefs,
+                                    );
                                 }
                             }
                         }
@@ -889,82 +1526,175 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                     // ── Click / scroll in Sidebar ────────────────────
                     else if sidebar_area.contains(pos) {
                         match mouse.kind {
-                            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                            _ if is_click => {
                                 active_pane = ActivePane::Sidebar;
-                                // Calculate which list item was clicked (avoiding borders)
-                                if mouse.row > sidebar_area.y && mouse.row < sidebar_area.y + sidebar_area.height.saturating_sub(1) {
-                                    let row_in_list = (mouse.row - sidebar_area.y - 1) as usize;
+                                let clicked = match app_tab {
+                                    AppTab::Overview | AppTab::Decompiler | AppTab::XRefs => {
+                                        let len = if functions.is_empty() {
+                                            sidebar_command_count(app_tab)
+                                        } else {
+                                            functions.len()
+                                        };
+                                        sidebar_index_from_click(
+                                            sidebar_area,
+                                            pos,
+                                            list_state.offset(),
+                                            len,
+                                        )
+                                    }
+                                    AppTab::Strings => sidebar_index_from_click(
+                                        sidebar_area,
+                                        pos,
+                                        strings_list_state.offset(),
+                                        if strings.is_empty() {
+                                            strings_sidebar_commands().len()
+                                        } else {
+                                            strings.len()
+                                        },
+                                    ),
+                                    AppTab::ROP => sidebar_index_from_click(
+                                        sidebar_area,
+                                        pos,
+                                        rop_list_state.offset(),
+                                        rop_gadgets.len(),
+                                    ),
+                                    AppTab::Firmware => sidebar_index_from_click(
+                                        sidebar_area,
+                                        pos,
+                                        firmware_list_state.offset(),
+                                        firmware_entries.len(),
+                                    ),
+                                    AppTab::Findings => sidebar_index_from_click(
+                                        sidebar_area,
+                                        pos,
+                                        findings_list_state.offset(),
+                                        findings_list.len(),
+                                    ),
+                                    AppTab::Toolkit => None,
+                                };
+
+                                if let Some(clicked) = clicked {
                                     if app_tab == AppTab::Strings {
-                                        let offset = strings_list_state.offset();
-                                        let clicked = offset + row_in_list;
-                                        if clicked < strings.len() {
-                                            strings_list_state.select(Some(clicked));
-                                        }
-                                    } else {
-                                        let offset = list_state.offset();
-                                        let clicked = offset + row_in_list;
-                                        if clicked < functions.len() {
-                                            list_state.select(Some(clicked));
-                                            // Auto-trigger decompile + xrefs on click
-                                            if let Some(func) = functions.get(clicked) {
-                                                let func_name = func.name.clone();
-                                                let tx_dec = tx_decompile.clone();
-                                                let port = bridge_port;
-                                                decompiled_code =
-                                                    format!("Decompiling {}...", func_name);
-                                                let func_name_dec = func_name.clone();
-                                                tokio::spawn(async move {
-                                                    if let Some(p) = port {
-                                                        let client = BridgeClient::new(p);
-                                                        if let Ok(res) =
-                                                            client.decompile(&func_name_dec).await
-                                                            && let Some(c_code) = res.c_code
-                                                        {
-                                                            let _ = tx_dec.send(c_code).await;
-                                                        }
-                                                    }
-                                                });
-                                                let tx_x = tx_xrefs.clone();
-                                                let func_name2 = func_name.clone();
-                                                tokio::spawn(async move {
-                                                    if let Some(p) = port {
-                                                        let client = BridgeClient::new(p);
-                                                        let callers = client
-                                                            .callers(&func_name2)
-                                                            .await
-                                                            .unwrap_or_default();
-                                                        let callees = client
-                                                            .callees(&func_name2)
-                                                            .await
-                                                            .unwrap_or_default();
-                                                        let _ = tx_x.send((callers, callees)).await;
-                                                    }
-                                                });
+                                        strings_list_state.select(Some(clicked));
+                                        if strings.is_empty() {
+                                            if let Some(cmd) = strings_sidebar_command(clicked) {
+                                                input = cmd.to_string();
+                                                active_pane = ActivePane::Input;
                                             }
+                                        }
+                                    } else if app_tab == AppTab::ROP {
+                                        rop_list_state.select(Some(clicked));
+                                    } else if app_tab == AppTab::Firmware {
+                                        firmware_list_state.select(Some(clicked));
+                                    } else if app_tab == AppTab::Findings {
+                                        findings_list_state.select(Some(clicked));
+                                    } else if matches!(
+                                        app_tab,
+                                        AppTab::Overview | AppTab::Decompiler | AppTab::XRefs
+                                    ) {
+                                        list_state.select(Some(clicked));
+                                        if functions.is_empty() {
+                                            if let Some(cmd) = sidebar_command(app_tab, clicked) {
+                                                input = cmd.to_string();
+                                                active_pane = ActivePane::Input;
+                                            }
+                                        } else if let Some(func) = functions.get(clicked) {
+                                            trigger_function_actions(
+                                                func.name.clone(),
+                                                bridge_port,
+                                                &mut decompiled_code,
+                                                &tx_decompile,
+                                                &tx_xrefs,
+                                            );
                                         }
                                     }
                                 }
                             }
                             MouseEventKind::ScrollDown => {
                                 active_pane = ActivePane::Sidebar;
-                                if app_tab == AppTab::Strings {
-                                    let i = strings_list_state.selected().unwrap_or(0);
-                                    let next = (i + 1).min(strings.len().saturating_sub(1));
-                                    strings_list_state.select(Some(next));
-                                } else {
-                                    let i = list_state.selected().unwrap_or(0);
-                                    let next = (i + 1).min(functions.len().saturating_sub(1));
-                                    list_state.select(Some(next));
+                                match app_tab {
+                                    AppTab::Overview | AppTab::Decompiler | AppTab::XRefs => {
+                                        let last = if functions.is_empty() {
+                                            sidebar_command_count(app_tab).saturating_sub(1)
+                                        } else {
+                                            functions.len().saturating_sub(1)
+                                        };
+                                        let i = list_state.selected().unwrap_or(0);
+                                        let next = (i + 1).min(last);
+                                        list_state.select(Some(next));
+                                    }
+                                    AppTab::Strings => {
+                                        let last = if strings.is_empty() {
+                                            strings_sidebar_commands().len().saturating_sub(1)
+                                        } else {
+                                            strings.len().saturating_sub(1)
+                                        };
+                                        let i = strings_list_state.selected().unwrap_or(0);
+                                        let next = (i + 1).min(last);
+                                        strings_list_state.select(Some(next));
+                                    }
+                                    AppTab::ROP => {
+                                        let i = rop_list_state.selected().unwrap_or(0);
+                                        let next = (i + 1).min(rop_gadgets.len().saturating_sub(1));
+                                        rop_list_state.select(Some(next));
+                                    }
+                                    AppTab::Firmware => {
+                                        let i = firmware_list_state.selected().unwrap_or(0);
+                                        let next =
+                                            (i + 1).min(firmware_entries.len().saturating_sub(1));
+                                        firmware_list_state.select(Some(next));
+                                    }
+                                    AppTab::Findings => {
+                                        let i = findings_list_state.selected().unwrap_or(0);
+                                        let next =
+                                            (i + 1).min(findings_list.len().saturating_sub(1));
+                                        findings_list_state.select(Some(next));
+                                    }
+                                    AppTab::Toolkit => {}
                                 }
                             }
                             MouseEventKind::ScrollUp => {
                                 active_pane = ActivePane::Sidebar;
-                                if app_tab == AppTab::Strings {
-                                    let i = strings_list_state.selected().unwrap_or(0);
-                                    strings_list_state.select(Some(i.saturating_sub(1)));
-                                } else {
-                                    let i = list_state.selected().unwrap_or(0);
-                                    list_state.select(Some(i.saturating_sub(1)));
+                                match app_tab {
+                                    AppTab::Overview | AppTab::Decompiler | AppTab::XRefs => {
+                                        let max = if functions.is_empty() {
+                                            sidebar_command_count(app_tab).saturating_sub(1)
+                                        } else {
+                                            functions.len().saturating_sub(1)
+                                        };
+                                        let i = match list_state.selected() {
+                                            Some(i) if i > max => max,
+                                            Some(i) => i,
+                                            None => 0,
+                                        };
+                                        list_state.select(Some(i.saturating_sub(1)));
+                                    }
+                                    AppTab::Strings => {
+                                        let max = if strings.is_empty() {
+                                            strings_sidebar_commands().len().saturating_sub(1)
+                                        } else {
+                                            strings.len().saturating_sub(1)
+                                        };
+                                        let i = match strings_list_state.selected() {
+                                            Some(i) if i > max => max,
+                                            Some(i) => i,
+                                            None => 0,
+                                        };
+                                        strings_list_state.select(Some(i.saturating_sub(1)));
+                                    }
+                                    AppTab::ROP => {
+                                        let i = rop_list_state.selected().unwrap_or(0);
+                                        rop_list_state.select(Some(i.saturating_sub(1)));
+                                    }
+                                    AppTab::Firmware => {
+                                        let i = firmware_list_state.selected().unwrap_or(0);
+                                        firmware_list_state.select(Some(i.saturating_sub(1)));
+                                    }
+                                    AppTab::Findings => {
+                                        let i = findings_list_state.selected().unwrap_or(0);
+                                        findings_list_state.select(Some(i.saturating_sub(1)));
+                                    }
+                                    AppTab::Toolkit => {}
                                 }
                             }
                             _ => {}
@@ -973,29 +1703,19 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                     // ── Click / scroll in Main Content ──────────────
                     else if main_content_area.contains(pos) {
                         match mouse.kind {
-                            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                            kind if is_left_click(kind) => {
                                 active_pane = ActivePane::MainContent;
                             }
-                            // Scroll in main content area also navigates sidebar list
-                            // (content panels like Decompiler/Overview are not scrollable yet)
                             MouseEventKind::ScrollDown => {
-                                if app_tab == AppTab::Strings {
-                                    let i = strings_list_state.selected().unwrap_or(0);
-                                    let next = (i + 1).min(strings.len().saturating_sub(1));
-                                    strings_list_state.select(Some(next));
-                                } else {
-                                    let i = list_state.selected().unwrap_or(0);
-                                    let next = (i + 1).min(functions.len().saturating_sub(1));
-                                    list_state.select(Some(next));
+                                if matches!(app_tab, AppTab::Overview | AppTab::Toolkit) {
+                                    // non-list detail regions currently do not support per-panel
+                                    // item scrolling; keep behavior stable and avoid accidental
+                                    // sidebar selection side effects.
                                 }
                             }
                             MouseEventKind::ScrollUp => {
-                                if app_tab == AppTab::Strings {
-                                    let i = strings_list_state.selected().unwrap_or(0);
-                                    strings_list_state.select(Some(i.saturating_sub(1)));
-                                } else {
-                                    let i = list_state.selected().unwrap_or(0);
-                                    list_state.select(Some(i.saturating_sub(1)));
+                                if matches!(app_tab, AppTab::Overview | AppTab::Toolkit) {
+                                    // keep behavior stable
                                 }
                             }
                             _ => {}
@@ -1003,15 +1723,12 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
                     }
                     // ── Click on Input Console → focus it ────────────
                     else if input_area.contains(pos) {
-                        if mouse.kind == MouseEventKind::Down(crossterm::event::MouseButton::Left) {
+                        if is_click {
                             active_pane = ActivePane::Input;
                         }
                     }
                     // ── Click on Log Area → toggle event view ────────
-                    else if log_area.contains(pos)
-                        && let MouseEventKind::Down(crossterm::event::MouseButton::Left) =
-                            mouse.kind
-                    {
+                    else if log_area.contains(pos) && is_click {
                         // Double-purpose: click log area to toggle view
                         event_view = event_view.toggle();
                     }
@@ -1033,14 +1750,179 @@ pub async fn run_tui(state: Arc<Mutex<DaemonState>>) -> Result<()> {
 
 // ─── Reusable Widget Renderers ────────────────────────────────────────────────
 
-/// Render the function sidebar (shared by Decompiler, XRefs, ROP, Overview).
+type SidebarCommand<'a> = (&'a str, &'a str);
+
+const OVERVIEW_QUICKSTART_COMMANDS: [SidebarCommand<'static>; 4] = [
+    ("info <binary>", "show basic binary summary in Overview"),
+    (
+        "toolkit rizin <binary>",
+        "fast local function scan (no Ghidra needed)",
+    ),
+    (
+        "analyze <binary> -p <project_dir> -n <project_name>",
+        "load into Ghidra bridge backend",
+    ),
+    (
+        "bridge -p <project_dir> -n <project_name>",
+        "start or restart bridge daemon",
+    ),
+];
+
+const DECOMPILER_QUICKSTART_COMMANDS: [SidebarCommand<'static>; 4] = [
+    (
+        "toolkit rizin <binary>",
+        "fast local scan, then choose a symbol",
+    ),
+    (
+        "analyze <binary> -p <project_dir> -n <project_name>",
+        "prepare Ghidra for decompile and xrefs",
+    ),
+    ("info <binary>", "load file metadata into Overview"),
+    (
+        "query search_strings <pattern>",
+        "run backend query once bridge is ready",
+    ),
+];
+
+const XREFS_QUICKSTART_COMMANDS: [SidebarCommand<'static>; 4] = [
+    (
+        "analyze <binary> -p <project_dir> -n <project_name>",
+        "prepare Ghidra backend then switch to [x]",
+    ),
+    (
+        "bridge -p <project_dir> -n <project_name>",
+        "connect to existing bridge daemon",
+    ),
+    (
+        "toolkit rizin <binary>",
+        "populate local function list first",
+    ),
+    ("info <binary>", "inspect binary metadata before xrefs"),
+];
+
+const STRINGS_QUICKSTART_COMMANDS: [SidebarCommand<'static>; 3] = [
+    ("toolkit strings <binary>", "extract ASCII/UTF-8 strings"),
+    (
+        "query search_strings <pattern>",
+        "search in currently attached bridge",
+    ),
+    (
+        "toolkit rizin <binary>",
+        "offline scan and string discovery",
+    ),
+];
+
+fn sidebar_commands_for_tab(tab: AppTab) -> &'static [SidebarCommand<'static>] {
+    match tab {
+        AppTab::Overview => &OVERVIEW_QUICKSTART_COMMANDS,
+        AppTab::Decompiler => &DECOMPILER_QUICKSTART_COMMANDS,
+        AppTab::XRefs => &XREFS_QUICKSTART_COMMANDS,
+        _ => &[],
+    }
+}
+
+fn sidebar_command(tab: AppTab, idx: usize) -> Option<&'static str> {
+    sidebar_commands_for_tab(tab).get(idx).map(|(cmd, _)| *cmd)
+}
+
+fn sidebar_command_count(tab: AppTab) -> usize {
+    sidebar_commands_for_tab(tab).len()
+}
+
+fn strings_sidebar_commands() -> &'static [SidebarCommand<'static>] {
+    &STRINGS_QUICKSTART_COMMANDS
+}
+
+fn strings_sidebar_command(idx: usize) -> Option<&'static str> {
+    strings_sidebar_commands().get(idx).map(|(cmd, _)| *cmd)
+}
+
+fn render_sidebar_command_list(
+    f: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    focused: bool,
+    title: &str,
+    commands: &[SidebarCommand<'static>],
+    list_state: &mut ListState,
+) {
+    if list_state.selected().is_none() && !commands.is_empty() {
+        list_state.select(Some(0));
+    }
+
+    let sidebar_items: Vec<ListItem> = commands
+        .iter()
+        .map(|(cmd, desc)| {
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("{HIGHLIGHT_SYMBOL}{cmd} "),
+                    Style::default()
+                        .fg(theme::AMBER)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(*desc, Style::default().fg(theme::SAND)),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(sidebar_items)
+        .block(themed_block(title, focused))
+        .highlight_style(theme::list_highlight())
+        .highlight_symbol(HIGHLIGHT_SYMBOL);
+    f.render_stateful_widget(list, area, list_state);
+}
+
+/// Render the function sidebar (shared by Decompiler, XRefs, Overview).
 fn render_sidebar_functions(
     f: &mut ratatui::Frame,
     area: ratatui::layout::Rect,
     focused: bool,
+    bridge_connected: bool,
+    tab: AppTab,
     functions: &[FunctionInfo],
     list_state: &mut ListState,
 ) {
+    if functions.is_empty() {
+        let fallback = sidebar_commands_for_tab(tab);
+        if !fallback.is_empty() {
+            render_sidebar_command_list(f, area, focused, "Functions", fallback, list_state);
+        } else if bridge_connected {
+            render_placeholder(
+                f,
+                area,
+                focused,
+                "Functions",
+                &[
+                    "No functions loaded.",
+                    "",
+                    "Start here in the console:",
+                    "  toolkit rizin <binary> (fast local scan)",
+                    "  analyze <bin> -p <project_dir> -n <project_name>",
+                    "  bridge -p <project_dir> -n <project_name> (backend)",
+                    "",
+                    "After functions appear:",
+                    "  Press Enter to decompile",
+                    "  Press [x] to load callers/callees",
+                ],
+            );
+        } else {
+            render_placeholder(
+                f,
+                area,
+                focused,
+                "Functions",
+                &[
+                    "No bridge available.",
+                    "",
+                    "Start here in the console:",
+                    "  toolkit rizin <binary> (fast local scan)",
+                    "  analyze <bin> -p <project_dir> -n <project_name> (Ghidra)",
+                    "  bridge -p <project_dir> -n <project_name> (start backend)",
+                ],
+            );
+        }
+        return;
+    }
+
     let func_items: Vec<ListItem> = functions
         .iter()
         .map(|func| {
@@ -1057,6 +1939,32 @@ fn render_sidebar_functions(
     f.render_stateful_widget(func_list, area, list_state);
 }
 
+fn fetch_xrefs_for_selected_function(
+    functions: &[FunctionInfo],
+    list_state: &ListState,
+    bridge_port: Option<u16>,
+    tx_xrefs: &tokio::sync::mpsc::Sender<(Vec<FunctionInfo>, Vec<FunctionInfo>)>,
+) {
+    let Some(i) = list_state.selected() else {
+        return;
+    };
+
+    let Some(func) = functions.get(i) else {
+        return;
+    };
+
+    let func_name = func.name.clone();
+    let tx = tx_xrefs.clone();
+    tokio::spawn(async move {
+        if let Some(p) = bridge_port {
+            let client = BridgeClient::new(p);
+            let callers = client.callers(&func_name).await.unwrap_or_default();
+            let callees = client.callees(&func_name).await.unwrap_or_default();
+            let _ = tx.send((callers, callees)).await;
+        }
+    });
+}
+
 /// Render the Overview tab — shows the ASCII banner + binary summary.
 #[allow(clippy::too_many_arguments)]
 fn render_overview(
@@ -1065,12 +1973,22 @@ fn render_overview(
     main_area: ratatui::layout::Rect,
     sidebar_focused: bool,
     main_focused: bool,
+    bridge_connected: bool,
+    tab: AppTab,
     functions: &[FunctionInfo],
     list_state: &mut ListState,
     overview_lines: &[String],
     tick: u64,
 ) {
-    render_sidebar_functions(f, sidebar_area, sidebar_focused, functions, list_state);
+    render_sidebar_functions(
+        f,
+        sidebar_area,
+        sidebar_focused,
+        bridge_connected,
+        tab,
+        functions,
+        list_state,
+    );
 
     // Build main panel content: banner + overview info
     let mut lines: Vec<Line> = Vec::new();
@@ -1175,4 +2093,70 @@ fn render_placeholder(
         .block(themed_block(title, focused))
         .wrap(Wrap { trim: false });
     f.render_widget(block, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{MouseButton, MouseEventKind};
+
+    #[test]
+    fn recognizes_left_mouse_click_variants() {
+        assert!(is_left_click(MouseEventKind::Down(MouseButton::Left)));
+        assert!(is_left_click(MouseEventKind::Up(MouseButton::Left)));
+        assert!(is_left_click(MouseEventKind::Drag(MouseButton::Left)));
+        assert!(!is_left_click(MouseEventKind::Down(MouseButton::Right)));
+    }
+
+    #[test]
+    fn sidebar_index_from_click_hits_scrolled_rows() {
+        let area = Rect::new(2, 3, 20, 8);
+        let pos = Position::new(5, 4); // content row 0
+
+        assert_eq!(sidebar_index_from_click(area, pos, 3, 12), Some(3));
+        assert_eq!(sidebar_index_from_click(area, pos, 3, 100), Some(3));
+        assert_eq!(sidebar_index_from_click(area, pos, 3, 3), None);
+        assert_eq!(
+            sidebar_index_from_click(area, Position::new(2, 4), 3, 12),
+            None
+        );
+        assert_eq!(
+            sidebar_index_from_click(area, Position::new(21, 4), 3, 12),
+            None
+        );
+    }
+
+    #[test]
+    fn sidebar_index_from_click_ignores_border_lines() {
+        let area = Rect::new(0, 0, 12, 4); // content rows y=1..2
+        assert_eq!(
+            sidebar_index_from_click(area, Position::new(1, 0), 0, 10),
+            None
+        );
+        assert_eq!(
+            sidebar_index_from_click(area, Position::new(1, 3), 0, 10),
+            None
+        );
+        assert_eq!(
+            sidebar_index_from_click(area, Position::new(1, 1), 0, 1),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn tab_from_click_matches_tab_positions() {
+        let area = Rect::new(0, 0, 120, 3);
+        let mut cursor: u16 = 0;
+        for tab in AppTab::ALL {
+            let x = area.x + 1 + cursor;
+            let y = area.y + 1;
+            assert!(matches!(tab_from_click(area, Position::new(x, y)), Some(v) if v == *tab));
+            cursor = cursor.saturating_add(tab.label().chars().count() as u16 + 1);
+        }
+
+        // divider area should not resolve to a tab
+        let first = AppTab::ALL[0];
+        let divider_x = area.x + 1 + first.label().chars().count() as u16;
+        assert!(tab_from_click(area, Position::new(divider_x, 1)).is_none());
+    }
 }
