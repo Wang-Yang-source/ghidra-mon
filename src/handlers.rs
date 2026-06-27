@@ -99,7 +99,7 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
             let bridge_port = port
                 .or_else(bridge::read_bridge_port)
                 .ok_or_else(|| {
-                    eprintln!("[error] no running Ghidra bridge adapter found. Start one with 'ghidrai bridge' or specify --port.");
+                    eprintln!("[error] no running Ghidra bridge adapter found. Start one with 'gda bridge' or specify --port.");
                     RevisorError::Bridge {
                         message: "No bridge port available".to_string(),
                     }
@@ -155,6 +155,10 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
                     return Err(e);
                 }
             }
+            Ok(())
+        }
+        Some(Commands::Catalog { format }) => {
+            print_tool_catalog(&format);
             Ok(())
         }
         Some(Commands::Toolkit(tk_cmd)) => {
@@ -311,12 +315,23 @@ pub async fn handle_command(command: Option<Commands>) -> Result<()> {
     }
 }
 
+fn print_tool_catalog(format: &str) {
+    if format == "json" {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(crate::toolkit::catalog::TOOL_CATALOG).unwrap_or_default()
+        );
+    } else {
+        crate::toolkit::catalog::print_catalog_pretty();
+    }
+}
+
 pub async fn require_ghidra() -> Result<String> {
     match setup::require_ghidra_headless().await {
         Ok(path) => Ok(path),
         Err(err) => {
             eprintln!(
-                "[error] could not find or initialize Ghidra. Run 'GHIDRA_AUTO_SETUP=0 ghidrai setup' to install manually."
+                "[error] could not find or initialize Ghidra. Run 'GHIDRA_AUTO_SETUP=0 gda setup' to install manually."
             );
             Err(err)
         }

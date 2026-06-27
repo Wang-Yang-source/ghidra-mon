@@ -1,6 +1,6 @@
 [package]
 name = "ghidrai"
-version = "0.8.2"
+version = "0.8.3"
 edition = "2024"
 description = "Terminal-first reverse engineering TUI toolkit with MCP server and Ghidra headless bridge integration."
 license = "GPL-3.0-or-later"

@@ -46,13 +46,18 @@ pub async fn run_console_command(state: Arc<Mutex<DaemonState>>, cmd: String) {
         args.insert(0, "query".to_string());
     }
 
+    let exe = std::env::current_exe().unwrap_or_else(|_| "ghidrai".into());
+    let exe_name = exe
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("gda");
+
     push_event(
         &state,
-        ToolEvent::status("tui", format!("$ ghidrai {}", args.join(" "))),
+        ToolEvent::status("tui", format!("$ {} {}", exe_name, args.join(" "))),
     )
     .await;
 
-    let exe = std::env::current_exe().unwrap_or_else(|_| "ghidrai".into());
     let mut command = tokio::process::Command::new(exe);
     command.args(&args);
     command.stdout(Stdio::piped());

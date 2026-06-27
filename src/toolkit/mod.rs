@@ -6,6 +6,7 @@
 //! | Module | Engine | Purpose |
 //! |--------|--------|---------|
 //! | [`binwalk`] | Built-in `binwalk` crate | Firmware signature scanning |
+//! | [`catalog`] | Static metadata | Unified reverse-engineering tool catalog |
 //! | [`checksec`] | `goblin` | ELF security hardening checks (PIE, NX, RELRO, canary) |
 //! | [`cwe`] | Native Rust triage | CWE-style findings from imports, hardening, strings |
 //! | [`disasm`] | `iced-x86` + `goblin` | Native x86/x86-64 disassembly |
@@ -21,6 +22,7 @@ use crate::adapter::schema::{AdapterCapability, OutputFormat};
 
 #[cfg(feature = "binwalk")]
 pub mod binwalk;
+pub mod catalog;
 pub mod checksec;
 pub mod cwe;
 pub mod disasm;

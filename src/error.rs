@@ -27,7 +27,7 @@ pub enum RevisorError {
     Setup(String),
 
     /// Ghidra installation not found
-    #[error("Ghidra not found. Run 'ghidrai setup' first.")]
+    #[error("Ghidra not found. Run 'gda setup' first.")]
     GhidraNotFound,
 
     /// Network errors (downloads, bridge connections)

@@ -1,13 +1,13 @@
-# GhidrAI (v0.8.1)
+# GhidrAI (v0.8.3)
 
 **Terminal Reverse Engineering TUI Toolkit Aggregator**
 *终端逆向工程 TUI 工作台 · 键盘优先与鼠标混用 · 多引擎协同互补*
 
-GhidrAI is a terminal-first reverse engineering workspace. It bundles local static analysis with Ghidra bridge workflows and MCP tooling for consistent automation.
+GhidrAI is a terminal-first reverse engineering workspace and tool aggregator. It bundles local static analysis with Ghidra bridge workflows, MCP tooling, and a catalog for the broader reverse-engineering toolbox.
 
 它将行业标准逆向引擎（Ghidra、Rizin）、反汇编/模拟引擎（Capstone、Unicorn）以及安全审计工具（Binwalk）作为子模块统一编排，形成“快扫描 + 深反编译 + 全景联动”的终端化分析流水线。
 
-本项目的目标是把“多工具并联分析”变成可复用的单点工作流：先用轻量分析拿到快速结论，再以 Ghidra Headless 产出高精度反编译和引用关系，用 TUI 做统一呈现。
+本项目的目标是把“多工具并联分析”变成可复用的单点工作流：先用轻量分析拿到快速结论，再以 Ghidra Headless 产出高精度反编译和引用关系，用 TUI 做统一呈现。它不是只做 Ghidra，而是要成为逆向、安全分析、固件分析、动态调试、Android 逆向和取证工具的大合集入口。
 
 项目长期产品记忆和设计哲学记录在 [MEMORY.md](MEMORY.md) 和 [DESIGN.md](DESIGN.md)。
 
@@ -21,10 +21,19 @@ GhidrAI is a terminal-first reverse engineering workspace. It bundles local stat
 
 ```bash
 cargo install --locked ghidrai
-ghidrai --help
+gda -h
 ```
 
 首次执行 `bridge`/`analyze`/`run-script` 等 Ghidra 依赖命令时会触发自动安装。
+
+查看当前工具合集覆盖范围：
+
+```bash
+gda catalog
+gda catalog --format json
+```
+
+目录会区分 `built-in`、`external`、`bundled` 和 `planned` 状态。当前已经内置或接入的能力包括 Ghidra、Rizin、Binwalk、Checksec、LIEF-style parser、strings、disasm、ROP、entropy、CWE、GDB/GDB-MI、Volatility-style triage；规划目录包含 IDA、x64dbg、WinDbg、Frida、JADX、apktool、010 Editor/WinHex/HxD、DIE/PEiD/Exeinfo PE、CFF Explorer/PE-bear、radare2 等看雪常见工具。
 
 ## 子模块（Submodules）架构与协同互补的意义
 
@@ -176,7 +185,7 @@ export GHIDRA_AUTO_SETUP=0
 关闭后再手动安装：
 
 ```bash
-ghidrai setup
+gda setup
 ```
 
 ## MCP 兼容说明（含 ghidra-mcp 外部后端）
@@ -188,22 +197,22 @@ ghidrai setup
 
 在 `external` 模式下，`ghidra-mcp` 的 MCP 工具集合会被完整代理，因此可直接服务支持 `ghidra-mcp` 的外部客户端和脚本；`legacy` 则保留兼容性和轻量启动体验。
 
-如果你设置了 `GHIDRA_MCP_COMMAND`，`ghidrai mcp` 在未显式传 `--backend` 时会自动切到 `external`，可以直接走完整能力：
+如果你设置了 `GHIDRA_MCP_COMMAND`，`gda mcp` 在未显式传 `--backend` 时会自动切到 `external`，可以直接走完整能力：
 
 ```bash
 export GHIDRA_MCP_COMMAND=python3
 export GHIDRA_MCP_ARGS='-m tools.bridge --transport stdio'
-ghidrai mcp
+gda mcp
 ```
 
-当仅运行 `ghidrai mcp` 且未设置 `GHIDRA_MCP_COMMAND` 时，仍保持 legacy 模式。
+当仅运行 `gda mcp` 且未设置 `GHIDRA_MCP_COMMAND` 时，仍保持 legacy 模式。
 
 当你要“尽量完整对齐 ghidra-mcp”时，建议优先走 `external`：
 
 ```bash
 GHIDRA_MCP_COMMAND=python3 \
 GHIDRA_MCP_ARGS='-m tools.bridge' \
-ghidrai mcp --backend external
+gda mcp --backend external
 ```
 
 如果你的 `bridge_mcp_ghidra.py` 不是通过 `python3 -m` 启动，也可以直接传完整命令：
@@ -211,7 +220,7 @@ ghidrai mcp --backend external
 ```bash
 GHIDRA_MCP_COMMAND='python3 bridge_mcp_ghidra.py' \
 GHIDRA_MCP_ARGS='--transport stdio' \
-ghidrai mcp --backend external
+gda mcp --backend external
 ```
 
 辅助变量：
@@ -250,12 +259,12 @@ python3 tests/compare_mcp_coverage.py
 
 ```bash
 # 启动 TUI 工作台
-ghidrai tui
+gda tui
 
 # 原生预分析工具测试
-ghidrai toolkit lief ./tests/crackme
-ghidrai toolkit strings ./tests/crackme
-ghidrai toolkit entropy ./tests/crackme
+gda toolkit lief ./tests/crackme
+gda toolkit strings ./tests/crackme
+gda toolkit entropy ./tests/crackme
 ```
 
 ## License

@@ -550,7 +550,7 @@ async fn handle_bridge_raw(args: &Value, response: &mut Value) {
     let port = match resolve_port(args) {
         Some(p) => p,
         None => {
-            response["error"] = json!({ "code": -32000, "message": "No bridge port specified and no running bridge found. Start a bridge first with 'ghidrai bridge' or pass a 'port' parameter." });
+            response["error"] = json!({ "code": -32000, "message": "No bridge port specified and no running bridge found. Start a bridge first with 'gda bridge' or pass a 'port' parameter." });
             return;
         }
     };
@@ -604,7 +604,7 @@ async fn send_bridge_command(
     let port = match resolve_port(tool_args) {
         Some(p) => p,
         None => {
-            response["error"] = json!({ "code": -32602, "message": "No bridge port available. Start a bridge with 'ghidrai bridge' or pass 'port'." });
+            response["error"] = json!({ "code": -32602, "message": "No bridge port available. Start a bridge with 'gda bridge' or pass 'port'." });
             return;
         }
     };

@@ -11,22 +11,23 @@ use clap::{Parser, Subcommand};
         2. Ghidra, Rizin, Binwalk, ROPgadget, GDB, Frida, Volatility and similar tools are pluggable engines.\n\
         3. Structured output is preferred; text parsing is isolated inside versioned adapters.\n\n\
         Examples:\n  \
-        ghidrai tui\n  \
-        ghidrai toolkit binwalk ./firmware.bin\n  \
-        ghidrai toolkit checksec ./tests/crackme\n  \
-        ghidrai toolkit cwe ./tests/crackme\n  \
-        ghidrai toolkit lief ./tests/crackme\n  \
-        ghidrai toolkit strings ./tests/crackme\n  \
-        ghidrai toolkit disasm ./tests/crackme\n  \
-        ghidrai toolkit entropy ./tests/crackme\n  \
-        ghidrai toolkit gdb ./tests/crackme\n  \
-        ghidrai toolkit gdb-mi ./tests/crackme\n  \
-        ghidrai toolkit rop ./tests/crackme\n  \
-        ghidrai toolkit volatility ./tests/crackme\n  \
-        ghidrai toolkit all ./tests/crackme --format json\n  \
-        ghidrai analyze /bin/ls -p /tmp/proj -n test_ls\n  \
-        ghidrai bridge -p /tmp/proj -n test_ls\n  \
-        ghidrai query decompile main"
+        gda tui\n  \
+        gda toolkit binwalk ./firmware.bin\n  \
+        gda toolkit checksec ./tests/crackme\n  \
+        gda toolkit cwe ./tests/crackme\n  \
+        gda toolkit lief ./tests/crackme\n  \
+        gda toolkit strings ./tests/crackme\n  \
+        gda toolkit disasm ./tests/crackme\n  \
+        gda toolkit entropy ./tests/crackme\n  \
+        gda toolkit gdb ./tests/crackme\n  \
+        gda toolkit gdb-mi ./tests/crackme\n  \
+        gda toolkit rop ./tests/crackme\n  \
+        gda toolkit volatility ./tests/crackme\n  \
+        gda catalog\n  \
+        gda toolkit all ./tests/crackme --format json\n  \
+        gda analyze /bin/ls -p /tmp/proj -n test_ls\n  \
+        gda bridge -p /tmp/proj -n test_ls\n  \
+        gda query decompile main"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -126,7 +127,7 @@ pub enum Commands {
     },
     /// Query the running Ghidra backend directly from CLI
     #[command(
-        long_about = "Sends a JSON command to the running Ghidra bridge backend and prints the result. This remains useful for debugging the Ghidra adapter while the broader toolkit model is built.\n\nExamples:\n  ghidrai query decompile main\n  ghidrai query search_strings password\n  ghidrai query list_functions"
+        long_about = "Sends a JSON command to the running Ghidra bridge backend and prints the result. This remains useful for debugging the Ghidra adapter while the broader toolkit model is built.\n\nExamples:\n  gda query decompile main\n  gda query search_strings password\n  gda query list_functions"
     )]
     Query {
         /// Bridge command to execute (e.g., 'decompile', 'list_functions')
@@ -159,6 +160,17 @@ pub enum Commands {
     /// Run CLI/TUI integrated reverse engineering toolkit backends
     #[command(subcommand)]
     Toolkit(ToolkitCommands),
+    /// Show the unified reverse-engineering tool catalog
+    Catalog {
+        /// Output format: pretty text or json
+        #[arg(
+            short,
+            long,
+            default_value = "pretty",
+            help = "Output format (pretty | json)"
+        )]
+        format: String,
+    },
 }
 
 #[derive(Subcommand)]
